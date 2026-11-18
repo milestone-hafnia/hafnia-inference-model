@@ -1,0 +1,61 @@
+[project]
+name = "package-openvino"
+version = "0.1.0"
+description = "Generic model export (ONNX -> OpenVINO) and model inference package for the Hafnia Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cyclopts==4.5.1",
+    "hafnia>=0.8.7",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.4.0", # Same OpenCV flavor as hafnia to avoid conflicting cv2 installs
+    "pydantic>=2.10.4",
+]
+
+[project.optional-dependencies]
+torch = [
+    "onnx>=1.17.0",
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+]
+onnxruntime = [
+    "onnxruntime>=1.26.0",
+]
+
+# Engine and exporter dependencies are added as optional extras when the modules using them are
+# implemented, so each module (and later each repo) only pulls in what it needs:
+# - "onnxruntime": inference_model_onnxruntime
+# - "openvino":    inference_model_openvino (openvino, nncf)
+# - "torch":       model_exporters (torch, torchvision)
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13.0",
+    "pytest>=9.0.1",
+    "ruff>=0.11.7",
+]
+
+# Flavors are discovered through this entry point group, also from separately installed packages.
+# Each entry point names a module that registers its flavors with 'register_flavor' on import.
+[project.entry-points."hafnia.inference_models"]
+onnxruntime = "inference_model_onnxruntime.flavors"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Each top-level package is a separate concept that can later move to its own repo (see docs/design.md)
+packages = ["src/inference_model_core", "src/inference_model_onnxruntime", "src/model_exporters"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+line-length = 120
+lint.select = ["C4", "E", "F", "B", "I", "W", "RUF", "Q"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: exports real models (downloads pretrained weights on first run)"]
