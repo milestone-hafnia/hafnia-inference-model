@@ -21,11 +21,14 @@ torch = [
 onnxruntime = [
     "onnxruntime>=1.26.0",
 ]
+openvino = [
+    "openvino>=2025.3.0",
+]
 
 # Engine and exporter dependencies are added as optional extras when the modules using them are
 # implemented, so each module (and later each repo) only pulls in what it needs:
 # - "onnxruntime": inference_model_onnxruntime
-# - "openvino":    inference_model_openvino (openvino, nncf)
+# - "openvino":    inference_model_openvino (openvino; nncf added with quantization)
 # - "torch":       model_exporters (torch, torchvision)
 
 [dependency-groups]
@@ -39,6 +42,7 @@ dev = [
 # Each entry point names a module that registers its flavors with 'register_flavor' on import.
 [project.entry-points."hafnia.inference_models"]
 onnxruntime = "inference_model_onnxruntime.flavors"
+openvino = "inference_model_openvino.flavors"
 
 [build-system]
 requires = ["hatchling"]
@@ -46,7 +50,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # Each top-level package is a separate concept that can later move to its own repo (see docs/design.md)
-packages = ["src/inference_model_core", "src/inference_model_onnxruntime", "src/model_exporters"]
+packages = [
+    "src/inference_model_core",
+    "src/inference_model_onnxruntime",
+    "src/inference_model_openvino",
+    "src/model_exporters",
+    "src/package_openvino",
+]
 
 [tool.ruff]
 extend-include = ["*.ipynb"]

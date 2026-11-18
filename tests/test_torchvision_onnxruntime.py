@@ -10,10 +10,8 @@ import cv2
 import numpy as np
 import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
-from hafnia.dataset.hafnia_dataset import HafniaDataset
-from hafnia.dataset.hafnia_dataset_types import Sample
 from hafnia.dataset.primitives import Bbox
-from helpers import PATH_MICRO_COCO, assert_detections_match
+from helpers import assert_detections_match
 
 from inference_model_core import inference_model_from_path, read_model_info
 
@@ -23,43 +21,9 @@ from inference_model_onnxruntime.flavors import (  # noqa: E402
     OnnxRuntimeTorchvisionDetection,
     OnnxRuntimeTorchvisionSSD,
 )
-from model_exporters.torchvision_detection import (  # noqa: E402
-    IGNORED_CATEGORIES,
-    export_torchvision_detection,
-    load_pretrained_model,
-)
+from model_exporters.torchvision_detection import IGNORED_CATEGORIES  # noqa: E402
 
 pytestmark = pytest.mark.slow
-
-SSD_NAME = "ssdlite320_mobilenet_v3_large"
-FRCNN_NAME = "fasterrcnn_mobilenet_v3_large_320_fpn"
-
-
-@pytest.fixture(scope="module")
-def micro_coco() -> HafniaDataset:
-    return HafniaDataset.from_path(PATH_MICRO_COCO)
-
-
-@pytest.fixture(scope="module")
-def images(micro_coco) -> List[np.ndarray]:
-    return [Sample(**sample).read_image() for sample in micro_coco]
-
-
-def _export(tmp_path_factory, model_name):
-    model, categories = load_pretrained_model(model_name)
-    path_bundle = tmp_path_factory.mktemp(model_name) / f"{model_name}.zip"
-    export_torchvision_detection(model, categories, path_bundle, name=model_name, variant=model_name)
-    return model, categories, path_bundle
-
-
-@pytest.fixture(scope="module")
-def ssd(tmp_path_factory):
-    return _export(tmp_path_factory, SSD_NAME)
-
-
-@pytest.fixture(scope="module")
-def frcnn(tmp_path_factory):
-    return _export(tmp_path_factory, FRCNN_NAME)
 
 
 def torch_detections(model, categories: List[str], image: np.ndarray) -> List[Bbox]:

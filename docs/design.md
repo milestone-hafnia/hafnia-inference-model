@@ -1,6 +1,6 @@
 # package-openvino: Generic Model Export and Inference
 
-Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–3 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export and the ONNX Runtime flavors.
+Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–4 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export, the ONNX Runtime flavors, the OpenVINO flavors and ONNX → OpenVINO conversion.
 Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
 `../trainer-object-detection` and `../trainer-classification`.
 
@@ -483,16 +483,16 @@ package-openvino/
 │   ├── inference_model_onnxruntime/ # → later: inference-model-onnx-runtime repo             [done]
 │   │   ├── engine.py                #   OnnxRuntimeModel: load/save/predict_raw
 │   │   └── flavors.py               #   OnnxRuntimeTorchvisionSSD, OnnxRuntimeTorchvisionDetection
-│   ├── inference_model_openvino/    # → later: inference-model-openvino repo                 [step 4]
+│   ├── inference_model_openvino/    # → later: inference-model-openvino repo                 [done]
 │   │   ├── engine.py / flavors.py   #   OpenVINO flavors (load ONNX and IR bundles)
 │   │   ├── export_onnx.py           #   generic ONNX bundle → OpenVINO bundle
-│   │   ├── quantize.py              #   NNCF PTQ with Hafnia-dataset calibration
-│   │   └── rt_info.py               #   ModelInfo → OpenVINO Model API rt_info
+│   │   ├── quantize.py              #   NNCF PTQ with Hafnia-dataset calibration             [step 5]
+│   │   └── rt_info.py               #   ModelInfo → OpenVINO Model API rt_info               [later]
 │   ├── model_exporters/             # framework → ONNX bundle (torch lives only here)        [done]
 │   │   └── torchvision_detection.py
 │   └── package_openvino/            # glue that stays in the trainer: benchmarking, platform helpers
-│       ├── latency.py
-│       └── platform.py              #   checkpoint discovery, dataset loading (as in trainers)
+│       ├── latency.py                                                                        [step 6]
+│       └── platform.py              #   checkpoint discovery (done), dataset loading (step 6)
 ├── scripts/
 │   ├── export_torchvision_to_onnx.py
 │   ├── export_onnx_to_openvino.py
@@ -579,6 +579,14 @@ model is kept. A few extra detections can appear from proposals the original wou
 on the test images, the extras scored 0.06–0.15, plus one bottle at 0.52. This is recorded in
 the bundle provenance (`rpn_score_threshold`, `original_rpn_score_threshold`).
 
+**Found in step 4: the deviation is large on blank frames.** On a uniform image (black, grey or
+white), the original model returns nothing, because there are no proposals. The exported graph
+returns up to 100 detections, the highest scoring 0.32 (black), 0.59 (grey) and 0.63 (white),
+identical on ONNX Runtime and OpenVINO. Uniform frames are common in video (covered or
+night-time cameras), so this should be fixed before Faster R-CNN numbers are reported. Options:
+keep the original RPN threshold and always keep at least the top proposal, or try the
+dynamo-based exporter, which may handle the zero-proposals case.
+
 **Latency note (SSD, CPU, ONNX Runtime).** About 3.5 ms preprocessing and 11 ms network.
 Postprocessing takes 86 ms at the torchvision default threshold of 0.001 (about 27k NMS
 candidates), 4.5 ms at 0.05 and 2.7 ms at 0.3. Benchmarks must state the threshold. Accuracy runs
@@ -587,6 +595,30 @@ use a low one, latency runs a serving one.
 ### 8.2 `scripts/export_onnx_to_openvino.py`
 
 The brief says "to pt2 format", which I read as "to OpenVINO IR".
+
+Implemented in step 4: the script plus `inference_model_openvino/export_onnx.py`
+(`export_onnx_bundle_to_openvino`, and `write_openvino_bundle`, which step 5 reuses for INT8).
+
+- Input bundle from the checkpoint dir when present, otherwise `--model-path`
+  (`package_openvino/platform.py`). `--precision fp32|fp16` (default fp32), `--device` for the
+  verification run.
+- The model info is copied. Only the file description in `runtime` changes (format, engine,
+  files, precision). The parent's format, files, precision and provenance are kept under
+  `runtime.provenance.parent`, with the OpenVINO version and `compress_to_fp16`.
+- Weights are compressed to FP16 only for `--precision fp16` (design review 4.2). SSDLite320:
+  `model.bin` is 13.8 MB in FP32 and 6.9 MB in FP16.
+- After conversion, the ONNX bundle and the IR bundle both run on OpenVINO with the same input,
+  and the largest output difference is logged. SSDLite320: 0 in FP32. In FP16, 0.16 px on boxes
+  and 1e-3 on scores.
+- Cross-engine parity (tests): raw SSD outputs ONNX Runtime vs OpenVINO (ONNX and IR) within
+  1e-2 px and 1e-4 on scores. Same primitives in both directions for SSD and Faster R-CNN
+  (IoU ≥ 0.99, score difference ≤ 1e-3), and the same Hafnia benchmark metrics.
+- SSDLite320 network latency on the dev laptop (i7-10875H, CPU, batch 1) is 7–13 ms median for
+  every engine/format combination, within the noise of the machine. Real comparisons come from
+  `benchmark.py` (step 6).
+- Not done yet: static-shape reshape (needed for NPU, maybe for NNCF) and Model API `rt_info`.
+
+The original plan, for reference:
 
 - Input: **any** ONNX bundle produced by our own exporters (Q2). The script is generic: it
   doesn't import any flavor. Bring-your-own ONNX with a hand-written `model_info.json` comes
@@ -633,9 +665,9 @@ The brief says "to pt2 format", which I read as "to OpenVINO IR".
 3. ✅ **torchvision → ONNX** exporter (SSDLite320 network-only, Faster R-CNN MobileNetV3 320
    full graph) + ONNX Runtime flavors + `scripts/export_torchvision_to_onnx.py`. Parity
    against the original torch models: see 8.1.
-4. **OpenVINO** flavors (loading both ONNX and IR bundles) + generic ONNX → OpenVINO exporter
+4. ✅ **OpenVINO** flavors (loading both ONNX and IR bundles) + generic ONNX → OpenVINO exporter
    (save with `compress_to_fp16=False` unless FP16 is asked for, design review 4.2). Test: ORT vs
-   OV FP32 raw outputs `allclose`, same primitives (the cross-engine parity test).
+   OV FP32 raw outputs `allclose`, same primitives (the cross-engine parity test). See 8.2.
 5. **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance.
 6. **Benchmark script** with latency + accuracy. Compare ORT / OV-FP32 / OV-INT8 on a sample
    dataset.
@@ -703,6 +735,7 @@ Changes adopted from the [design review](design_review.md) (2026-11-18):
 | 3. Preprocessing | One implementation, `preprocess_model_input()`. It is the default `InferenceModelBase.preprocess()` and is used for quantization calibration. |
 | 4.1 Settings | Decoder settings are model info defaults, overridden at load time with `postprocessing_params` and validated by the flavor's typed `params_model`. Engine options are separate keyword arguments. |
 | 4.5 `uint8` input | `scale` defaults to `None` for `uint8` inputs, so `PreprocessingInfo(dtype="uint8")` is valid. |
+| 4.2 Precision | Applied in step 4: the OpenVINO exporter compresses weights to FP16 only when asked and records `precision` and `compress_to_fp16`. |
 
 Not applied yet, to decide separately:
 
