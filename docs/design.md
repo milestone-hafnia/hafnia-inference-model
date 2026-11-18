@@ -569,23 +569,27 @@ Measured against the original torch models on the micro COCO images in `tests/da
   ≥ 0.05, worst IoU 1.0000, worst score difference 1.2e-6.
 - **SSD, original image sizes** (OpenCV resize outside the graph vs torch resize in the
   graph): worst IoU 0.9925, worst score difference 0.008.
-- **Faster R-CNN:** 28 detections ≥ 0.05, worst IoU 1.0000, worst score difference 1.2e-5.
+- **Faster R-CNN:** 28 detections ≥ 0.05, worst IoU 1.0000, worst score difference 1.2e-5, no extra
+  detections.
 
-**Known deviation, Faster R-CNN.** Tracing bakes in a Python branch of torchvision's box
-decoding ("there are proposals"). Blank images get no proposals from the RPN, whose score
-threshold for this model is 0.05, so they crashed the exported graph. The exporter sets the RPN
-score threshold to 0, which means there are always proposals. Every detection of the original
-model is kept. A few extra detections can appear from proposals the original would have dropped:
-on the test images, the extras scored 0.06–0.15, plus one bottle at 0.52. This is recorded in
-the bundle provenance (`rpn_score_threshold`, `original_rpn_score_threshold`).
+**Images without proposals, Faster R-CNN.** Blank, uniform and noise frames get no proposals
+from the RPN, so the graph must run with zero boxes. torchvision handles that case in ways
+that don't survive tracing. The exporter swaps in zero-box-safe replacements for the export
+only, with the same arithmetic:
 
-**Found in step 4: the deviation is large on blank frames.** On a uniform image (black, grey or
-white), the original model returns nothing, because there are no proposals. The exported graph
-returns up to 100 detections, the highest scoring 0.32 (black), 0.59 (grey) and 0.63 (white),
-identical on ONNX Runtime and OpenVINO. Uniform frames are common in video (covered or
-night-time cameras), so this should be fixed before Faster R-CNN numbers are reported. Options:
-keep the original RPN threshold and always keep at least the top proposal, or try the
-dynamo-based exporter, which may handle the zero-proposals case.
+- `BoxCoder.decode` reshapes with `-1` behind a Python `if box_sum > 0`. A reshape of zero boxes
+  to `(0, -1, 4)` is ambiguous, so the graph crashed. The replacement stacks the coordinates
+  to `(boxes, classes, 4)` and has no reshape.
+- `clip_boxes_to_image` ends with `reshape(boxes.shape)`, which the exporter turns into the same
+  kind of ambiguous reshape. ONNX Runtime only got past it through a graph optimisation.
+- `batched_nms` returns `torch.empty((0,))` for zero boxes, an empty constant inside an ONNX
+  `If`. **OpenVINO reads empty constants as scalars**, so it returned one row of uninitialized
+  memory (random box, score and label) instead of nothing. Worth reporting to Intel.
+
+With these, all three (torch, ONNX Runtime, OpenVINO) return nothing on blank and noise images
+and the same detections on the test images, in both directions. Step 3 instead set the RPN score
+threshold to 0, which avoided the crash but produced up to 100 false detections per blank frame
+(scores up to 0.63).
 
 **Latency note (SSD, CPU, ONNX Runtime).** About 3.5 ms preprocessing and 11 ms network.
 Postprocessing takes 86 ms at the torchvision default threshold of 0.001 (about 27k NMS

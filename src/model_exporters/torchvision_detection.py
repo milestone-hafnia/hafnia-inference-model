@@ -14,11 +14,12 @@ Two export contracts (see docs/design.md and docs/design_review.md):
 This is the only module importing torch/torchvision.
 """
 
+import contextlib
 import copy
 import tempfile
 import warnings
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import onnx
 import torch
@@ -28,9 +29,12 @@ from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
 from torch import nn
 from torchvision.models import WeightsEnum, detection
+from torchvision.models.detection._utils import BoxCoder
 from torchvision.models.detection.faster_rcnn import FasterRCNN
 from torchvision.models.detection.image_list import ImageList
 from torchvision.models.detection.ssd import SSD
+from torchvision.ops import boxes as box_ops
+from torchvision.ops import nms
 
 from inference_model_core import (
     InputInfo,
@@ -270,33 +274,111 @@ class _FullGraphDetector(nn.Module):
         return detections["boxes"], detections["scores"], detections["labels"]
 
 
+class _ExportBoxCoder(BoxCoder):
+    """'BoxCoder' whose 'decode' also exports correctly for zero boxes.
+
+    torchvision's 'decode' reshapes with '-1' behind a Python 'if box_sum > 0'. Tracing records the branch,
+    and in ONNX a reshape of zero boxes to '(0, -1, 4)' is ambiguous, so an image without proposals (e.g. a
+    blank frame) crashed the exported graph. This 'decode' has no reshape: it is 'decode_single' with the
+    coordinates stacked to '(boxes, classes, 4)' directly. Same arithmetic as torchvision.
+    """
+
+    def decode(self, rel_codes: torch.Tensor, boxes: List[torch.Tensor]) -> torch.Tensor:  # type: ignore[override]
+        reference = torch.cat(boxes, dim=0).to(rel_codes.dtype)
+        widths = reference[:, 2] - reference[:, 0]
+        heights = reference[:, 3] - reference[:, 1]
+        ctr_x = reference[:, 0] + 0.5 * widths
+        ctr_y = reference[:, 1] + 0.5 * heights
+
+        wx, wy, ww, wh = self.weights
+        dx = rel_codes[:, 0::4] / wx  # (boxes, classes)
+        dy = rel_codes[:, 1::4] / wy
+        dw = torch.clamp(rel_codes[:, 2::4] / ww, max=self.bbox_xform_clip)
+        dh = torch.clamp(rel_codes[:, 3::4] / wh, max=self.bbox_xform_clip)
+
+        pred_ctr_x = dx * widths[:, None] + ctr_x[:, None]
+        pred_ctr_y = dy * heights[:, None] + ctr_y[:, None]
+        half_w = 0.5 * torch.exp(dw) * widths[:, None]
+        half_h = 0.5 * torch.exp(dh) * heights[:, None]
+        corners = (pred_ctr_x - half_w, pred_ctr_y - half_h, pred_ctr_x + half_w, pred_ctr_y + half_h)
+        return torch.stack(corners, dim=2)
+
+    @classmethod
+    def from_box_coder(cls, box_coder: BoxCoder) -> "_ExportBoxCoder":
+        return cls(box_coder.weights, bbox_xform_clip=box_coder.bbox_xform_clip)
+
+
+def _batched_nms_export(boxes: torch.Tensor, scores: torch.Tensor, idxs: torch.Tensor, iou_threshold: float):
+    """torchvision's 'batched_nms' (coordinate trick, as used when tracing) without its zero-boxes branch.
+
+    That branch returns 'torch.empty((0,))', which becomes an empty constant in an ONNX 'If'. OpenVINO reads
+    empty constants as scalars, so for an image without boxes it returned one element of uninitialized
+    memory. Here the zero-boxes case takes the normal path: adding 0 to the maximum is a no-op for boxes
+    clipped to the image (coordinates >= 0), so the result is unchanged otherwise.
+    """
+    max_coordinate = torch.cat([boxes.reshape(-1), boxes.new_zeros(1)]).max()
+    offsets = idxs.to(boxes) * (max_coordinate + 1)
+    return nms(boxes + offsets[:, None], scores, iou_threshold)
+
+
+def _clip_boxes_to_image_export(boxes: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+    """torchvision's 'clip_boxes_to_image' (tracing path) without the final 'reshape(boxes.shape)'.
+
+    The exporter turns that reshape into '(boxes, classes, -1)', which is ambiguous for zero boxes. Stacking
+    the four clipped coordinates gives the same result without a reshape.
+    """
+    height, width = size
+    zero = torch.tensor(0, dtype=boxes.dtype, device=boxes.device)
+    max_x = torch.tensor(width, dtype=boxes.dtype, device=boxes.device)
+    max_y = torch.tensor(height, dtype=boxes.dtype, device=boxes.device)
+    x0, y0, x1, y1 = boxes.unbind(dim=-1)
+    clipped = [torch.min(torch.max(x, zero), max_x) for x in (x0, x1)]
+    clipped += [torch.min(torch.max(y, zero), max_y) for y in (y0, y1)]
+    return torch.stack([clipped[0], clipped[2], clipped[1], clipped[3]], dim=-1)
+
+
+@contextlib.contextmanager
+def _zero_box_safe_ops() -> Iterator[None]:
+    """Use zero-box-safe versions of torchvision's box ops while exporting a two-stage detector.
+
+    The RPN and ROI heads call these through the 'torchvision.ops.boxes' module, so patching the module
+    attributes is enough. Only active during export.
+    """
+    original = box_ops.batched_nms, box_ops.clip_boxes_to_image
+    box_ops.batched_nms = _batched_nms_export  # type: ignore[assignment]
+    box_ops.clip_boxes_to_image = _clip_boxes_to_image_export  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        box_ops.batched_nms, box_ops.clip_boxes_to_image = original
+
+
 def _export_full_graph(
     model: FasterRCNN, path_onnx: Path, label_to_class_idx: List[int], opset_version: int
 ) -> RuntimeInfo:
     runtime_score_threshold = model.roi_heads.score_thresh
     export_model = copy.deepcopy(model).eval()
     export_model.roi_heads.score_thresh = min(FULL_GRAPH_MIN_SCORE, runtime_score_threshold)
-    # Tracing bakes in the Python branch "proposals > 0" of torchvision's box decoding: an image without
-    # proposals (e.g. a blank frame, rejected by the RPN score threshold) then crashes the graph. With an RPN
-    # score threshold of 0 there are always proposals. All detections of the original model are kept; a few
-    # extra, mostly low-score detections can appear from proposals the original model would have dropped.
-    export_model.rpn.score_thresh = 0.0
+    # Images without proposals (e.g. blank frames) are common in video. torchvision handles zero boxes with
+    # Python branches and reshapes that don't survive tracing: replace them for the export (see the helpers).
+    export_model.roi_heads.box_coder = _ExportBoxCoder.from_box_coder(export_model.roi_heads.box_coder)
 
     dummy = torch.rand(3, 480, 640)
-    _onnx_export(
-        _FullGraphDetector(export_model),
-        (dummy,),
-        path_onnx,
-        input_names=["image"],
-        output_names=["boxes", "scores", "labels"],
-        dynamic_axes={
-            "image": {1: "height", 2: "width"},
-            "boxes": {0: "detections"},
-            "scores": {0: "detections"},
-            "labels": {0: "detections"},
-        },
-        opset_version=opset_version,
-    )
+    with _zero_box_safe_ops():
+        _onnx_export(
+            _FullGraphDetector(export_model),
+            (dummy,),
+            path_onnx,
+            input_names=["image"],
+            output_names=["boxes", "scores", "labels"],
+            dynamic_axes={
+                "image": {1: "height", 2: "width"},
+                "boxes": {0: "detections"},
+                "scores": {0: "detections"},
+                "labels": {0: "detections"},
+            },
+            opset_version=opset_version,
+        )
 
     transform = model.transform
     return RuntimeInfo(
@@ -328,8 +410,6 @@ def _export_full_graph(
         provenance={
             "graph_min_score": export_model.roi_heads.score_thresh,
             "graph_max_detections": export_model.roi_heads.detections_per_img,
-            "rpn_score_threshold": export_model.rpn.score_thresh,
-            "original_rpn_score_threshold": model.rpn.score_thresh,
         },
     )
 

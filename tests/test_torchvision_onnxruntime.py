@@ -69,7 +69,6 @@ def test_model_info(ssd, frcnn, micro_coco):
     assert ssd_info.runtime.preprocessing.resize is not None
     assert frcnn_info.runtime.input.tensors[0].shape == [3, None, None]
     assert frcnn_info.runtime.preprocessing.in_graph == ["resize", "normalize"]
-    assert frcnn_info.runtime.provenance["rpn_score_threshold"] == 0.0
 
 
 def test_ssd_matches_torch_without_resize(ssd, images):
@@ -106,28 +105,37 @@ def test_ssd_matches_torch_on_original_images(ssd, images):
     assert n_checked >= len(images)
 
 
-def test_frcnn_reproduces_all_torch_detections(frcnn, images):
-    """The exported graph keeps every detection of the original model (score >= 0.05), see the RPN score
-    threshold in the exporter. Same input size on both sides, so differences are numerical only."""
+def test_frcnn_matches_torch(frcnn, images):
+    """Same detections as the original model in both directions (nothing missing, nothing extra). Same input
+    size on both sides, so differences are numerical only."""
     torch_model, categories, path_bundle = frcnn
     model = inference_model_from_path(path_bundle)
+    settings = {"min_score": model.params.score_threshold, "min_iou": 0.99, "max_score_diff": 1e-3}
     for image in images:
-        n_checked = assert_detections_match(
-            reference=torch_detections(torch_model, categories, image),
-            predicted=model.predict(image),
-            min_score=model.params.score_threshold,
-            min_iou=0.99,
-            max_score_diff=1e-3,
-        )
-        assert n_checked > 0
+        reference, predicted = torch_detections(torch_model, categories, image), model.predict(image)
+        assert assert_detections_match(reference, predicted, **settings) > 0
+        assert_detections_match(predicted, reference, **settings)
 
 
-@pytest.mark.parametrize("fill_value", [0, 128, 255])
-def test_frcnn_handles_images_without_proposals(frcnn, fill_value):
-    """Blank images give no RPN proposals in the original model, which must not crash the exported graph."""
-    model = inference_model_from_path(frcnn[2])
-    predictions = model.predict(np.full((300, 400, 3), fill_value, dtype=np.uint8))
-    assert all(p.confidence >= model.params.score_threshold for p in predictions)
+@pytest.mark.parametrize("fill_value", [0, 128, 255, None])
+def test_frcnn_images_without_proposals(frcnn, fill_value):
+    """Blank and noise images give no RPN proposals in the original model. The exported graph must run the
+    zero-boxes path (see '_zero_box_safe_ops' in the exporter) and return nothing, like the original."""
+    torch_model, categories, path_bundle = frcnn
+    if fill_value is None:
+        image = np.random.default_rng(0).integers(0, 256, size=(480, 640, 3), dtype=np.uint8)
+    else:
+        image = np.full((300, 400, 3), fill_value, dtype=np.uint8)
+    model = inference_model_from_path(path_bundle)
+    raw_outputs = model.predict_raw(model.preprocess(image)[0])
+
+    assert torch_detections(torch_model, categories, image) == []
+    assert {name: output.shape for name, output in raw_outputs.items()} == {
+        "boxes": (0, 4),
+        "scores": (0,),
+        "labels": (0,),
+    }
+    assert model.predict(image) == []
 
 
 def test_ssd_batching(ssd, images):

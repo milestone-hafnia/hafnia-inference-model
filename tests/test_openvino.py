@@ -123,15 +123,15 @@ def test_ssd_batching(ssd_ir, images):
 
 
 @pytest.mark.parametrize("fill_value", [0, 128, 255])
-def test_frcnn_blank_images_match_onnxruntime(frcnn, frcnn_ir, fill_value):
-    """Blank images take the zero-proposals path of the original model. The exported graph runs it without
-    the original's score filter (see the RPN score threshold in the exporter), so both engines must agree."""
+def test_frcnn_images_without_proposals(frcnn, frcnn_ir, fill_value):
+    """Blank images take the zero-boxes path of the graph. OpenVINO used to return one row of uninitialized
+    memory there (see '_batched_nms_export' in the exporter): the outputs must be empty on both formats."""
     image = np.full((300, 400, 3), fill_value, dtype=np.uint8)
-    expected = inference_model_from_path(frcnn[2]).predict(image)
-    predicted = inference_model_from_path(frcnn_ir).predict(image)
-    settings = {"min_score": 0.1, "min_iou": 0.99, "max_score_diff": 1e-3}
-    assert_detections_match(expected, predicted, **settings)
-    assert_detections_match(predicted, expected, **settings)
+    onnx_on_openvino = inference_model_from_path(frcnn[2], inference_engine="openvino")
+    for model in (onnx_on_openvino, inference_model_from_path(frcnn_ir)):
+        raw_outputs = model.predict_raw(model.preprocess(image)[0])
+        assert [output.shape[0] for output in raw_outputs.values()] == [0, 0, 0]
+        assert model.predict(image) == []
 
 
 def test_write_model_round_trip(ssd_ir, images, tmp_path):
