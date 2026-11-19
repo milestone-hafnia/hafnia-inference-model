@@ -25,15 +25,43 @@ Each top-level package under `src/` is a separate concept that can later move to
 | `scripts/export_torchvision_to_onnx.py` | Export a pretrained torchvision detection model to an ONNX bundle in the experiment model folder |
 | `scripts/export_onnx_to_openvino.py` | Convert an ONNX bundle (checkpoint or `--model-path`) to an OpenVINO IR bundle, FP32 or FP16 |
 
+## Examples
+
+| Example | Shows |
+|---|---|
+| `examples/example_inference_model.py` | The basic flow: torchvision → ONNX bundle, run it with ONNX Runtime, convert to OpenVINO, run it with OpenVINO (same loading and `predict` code for both engines), draw the predictions next to the ground truth, and run Hafnia's benchmark |
+| `examples/example_compare_models.py` | SSDLite320 and Faster R-CNN on ONNX Runtime and OpenVINO (ONNX, IR FP32, IR FP16) in one loop, with Hafnia's benchmark (mAP) and latency in a table, and predictions drawn per model |
+
+```bash
+uv run python examples/example_inference_model.py  # Outputs go to .data/examples/
+uv run python examples/example_compare_models.py
+```
+
+## Micro datasets
+
+Tests and examples use small copies of Hafnia platform datasets stored in `tests/data`, so they run offline.
+`tests/micro_datasets.py` defines them (source dataset, number of samples, seed) and creates them from the
+platform. Creating them needs a Hafnia profile with a valid API key; tests create a missing micro dataset
+automatically.
+
+| Micro dataset | Source | Samples |
+|---|---|---|
+| `micro-coco-2017` | `coco-2017-tiny` 1.0.0 (20 samples) | 8, seed 0 |
+
+```bash
+uv run python tests/micro_datasets.py          # Create missing micro datasets
+uv run python tests/micro_datasets.py --force  # Recreate all of them
+```
+
 ## Development
 
 ```bash
 uv sync --all-extras         # Install dependencies incl. torch, onnxruntime, openvino and the dev group
 uv run pytest                # Run all tests (the first run downloads pretrained torchvision weights)
 uv run pytest -m "not slow"  # Skip the end-to-end export tests
-uv run ruff check src tests scripts  # Lint
-uv run ruff format src tests scripts # Format
-uv run mypy src tests scripts        # Type check
+uv run ruff check src tests scripts examples  # Lint
+uv run ruff format src tests scripts examples # Format
+uv run mypy src tests scripts examples        # Type check
 ```
 
 ## Usage

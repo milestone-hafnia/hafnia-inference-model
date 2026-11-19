@@ -117,10 +117,23 @@ def test_frcnn_matches_torch(frcnn, images):
         assert_detections_match(predicted, reference, **settings)
 
 
+@pytest.mark.parametrize("height, width", [(400, 640), (480, 640), (500, 375), (320, 320), (300, 401)])
+def test_frcnn_matches_torch_across_input_sizes(frcnn, images, height, width):
+    """The in-graph resize must give the same size as torch. 400 x 640 scales by exactly 0.8, which the
+    float32 size computation of the traced graph got wrong (see '_resize_image_export' in the exporter)."""
+    torch_model, categories, path_bundle = frcnn
+    model = inference_model_from_path(path_bundle)
+    image = cv2.resize(images[0], (width, height), interpolation=cv2.INTER_LINEAR)
+    reference, predicted = torch_detections(torch_model, categories, image), model.predict(image)
+    settings = {"min_score": model.params.score_threshold, "min_iou": 0.99, "max_score_diff": 1e-3}
+    assert_detections_match(reference, predicted, **settings)
+    assert_detections_match(predicted, reference, **settings)
+
+
 @pytest.mark.parametrize("fill_value", [0, 128, 255, None])
 def test_frcnn_images_without_proposals(frcnn, fill_value):
     """Blank and noise images give no RPN proposals in the original model. The exported graph must run the
-    zero-boxes path (see '_zero_box_safe_ops' in the exporter) and return nothing, like the original."""
+    zero-boxes path (see '_export_safe_ops' in the exporter) and return nothing, like the original."""
     torch_model, categories, path_bundle = frcnn
     if fill_value is None:
         image = np.random.default_rng(0).integers(0, 256, size=(480, 640, 3), dtype=np.uint8)
@@ -157,10 +170,13 @@ def test_score_threshold_is_a_runtime_setting(ssd, images):
     default_model = inference_model_from_path(ssd[2])
     strict_model = inference_model_from_path(ssd[2], postprocessing_params={"score_threshold": 0.5})
 
-    default_predictions, strict_predictions = default_model.predict(images[0]), strict_model.predict(images[0])
-    assert len(strict_predictions) < len(default_predictions)
-    assert strict_predictions and all(p.confidence > 0.5 for p in strict_predictions)
-    assert strict_predictions == [p for p in default_predictions if p.confidence > 0.5]
+    n_strict = 0
+    for image in images:
+        default_predictions, strict_predictions = default_model.predict(image), strict_model.predict(image)
+        assert len(strict_predictions) < len(default_predictions)
+        assert strict_predictions == [p for p in default_predictions if p.confidence > 0.5]
+        n_strict += len(strict_predictions)
+    assert n_strict > 0
 
 
 def test_write_model_round_trip(ssd, images, tmp_path):

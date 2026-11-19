@@ -13,17 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-torch = [
-    "onnx>=1.17.0",
-    "torch==2.10.0",
-    "torchvision==0.25.0",
-]
-onnxruntime = [
-    "onnxruntime>=1.26.0",
-]
-openvino = [
-    "openvino>=2025.3.0",
-]
+torch = ["onnx>=1.17.0", "torch==2.10.0", "torchvision==0.25.0"]
+onnxruntime = ["onnxruntime>=1.26.0"]
+openvino = ["openvino>=2025.3.0"]
 
 # Engine and exporter dependencies are added as optional extras when the modules using them are
 # implemented, so each module (and later each repo) only pulls in what it needs:
@@ -32,11 +24,7 @@ openvino = [
 # - "torch":       model_exporters (torch, torchvision)
 
 [dependency-groups]
-dev = [
-    "mypy>=1.13.0",
-    "pytest>=9.0.1",
-    "ruff>=0.11.7",
-]
+dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
 
 # Flavors are discovered through this entry point group, also from separately installed packages.
 # Each entry point names a module that registers its flavors with 'register_flavor' on import.
@@ -68,4 +56,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: exports real models (downloads pretrained weights on first run)"]
+markers = [
+    "slow: exports real models (downloads pretrained weights on first run)",
+]

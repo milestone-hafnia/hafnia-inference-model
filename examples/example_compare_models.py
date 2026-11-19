@@ -1,0 +1,113 @@
+"""Benchmark several models on several engines and formats with the same code.
+
+For each torchvision model, the example exports an ONNX bundle and converts it to OpenVINO IR in FP32 and
+FP16. Every bundle is then loaded with 'inference_model_from_path' and run through Hafnia's benchmark
+(accuracy) and a simple latency measurement:
+
+    model                 bundle             engine
+    SSDLite320            ONNX               ONNX Runtime
+    Faster R-CNN 320      ONNX               OpenVINO (engine override)
+                          OpenVINO IR FP32   OpenVINO
+                          OpenVINO IR FP16   OpenVINO
+
+The loop body never depends on the model or the engine: the model info in each bundle selects the
+implementation. See 'example_inference_model.py' for the basic flow of a single model.
+
+Run from the repo root (needs all extras: 'uv sync --all-extras'):
+
+    uv run python examples/example_compare_models.py
+"""
+
+import contextlib
+import io
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+from hafnia.dataset.benchmark.benchmark import run_benchmark
+from hafnia.dataset.hafnia_dataset import HafniaDataset
+from hafnia.dataset.hafnia_dataset_types import Sample
+from hafnia.utils import progress_bar
+from rich import print as rprint
+from rich.table import Table
+
+from inference_model_core import inference_model_from_path
+from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
+from model_exporters.torchvision_detection import export_pretrained_torchvision_detection
+
+MODELS = {
+    "SSDLite320": "ssdlite320_mobilenet_v3_large",
+    "Faster R-CNN 320": "fasterrcnn_mobilenet_v3_large_320_fpn",
+}
+SERVING_PARAMS = {"score_threshold": 0.3}  # Decoder settings for latency and visualization
+PATH_DATASET = Path(__file__).parents[1] / "tests" / "data" / "micro-coco-2017"
+PATH_OUTPUT = Path(".data") / "examples" / "compare_models"
+PATH_OUTPUT.mkdir(parents=True, exist_ok=True)
+
+# (bundle path, engine). 'None' runs the bundle on its default engine.
+BundleRun = Tuple[Path, Optional[str]]
+
+
+def export_bundles(model_name: str) -> Dict[str, BundleRun]:
+    """Export a torchvision model to ONNX, convert it to OpenVINO IR, and list the ways to run them."""
+    path_onnx = PATH_OUTPUT / f"{model_name}_onnx.zip"
+    path_fp32 = PATH_OUTPUT / f"{model_name}_openvino_fp32.zip"
+    path_fp16 = PATH_OUTPUT / f"{model_name}_openvino_fp16.zip"
+    export_pretrained_torchvision_detection(model_name, path_onnx, overwrite=True)
+    export_onnx_bundle_to_openvino(path_onnx, path_fp32, precision="fp32", overwrite=True)
+    export_onnx_bundle_to_openvino(path_onnx, path_fp16, precision="fp16", overwrite=True)
+    return {
+        "ONNX / ONNX Runtime": (path_onnx, None),
+        "ONNX / OpenVINO": (path_onnx, "openvino"),
+        "IR FP32 / OpenVINO": (path_fp32, None),
+        "IR FP16 / OpenVINO": (path_fp16, None),
+    }
+
+
+def median_latency_ms(path_bundle: Path, engine: Optional[str], images: List[np.ndarray], repeats: int = 5) -> float:
+    """End-to-end latency of 'predict' (preprocess + model + postprocess) for one image, on CPU."""
+    model = inference_model_from_path(path_bundle, inference_engine=engine, postprocessing_params=SERVING_PARAMS)
+    model.predict(images[0])  # Warm-up
+    latencies = []
+    for image in images * repeats:
+        start = time.perf_counter()
+        model.predict(image)
+        latencies.append(time.perf_counter() - start)
+    return float(np.median(latencies)) * 1000
+
+
+# A Hafnia dataset to run on: the micro dataset (8 COCO images, see 'tests/micro_datasets.py'). Any
+# Hafnia dataset works, e.g. 'HafniaDataset.from_name("coco-2017")'.
+dataset = HafniaDataset.from_path(PATH_DATASET)
+images = [Sample(**sample_dict).read_image() for sample_dict in dataset]
+
+table = Table(
+    title=f"Detection models on {len(dataset)} COCO images",
+    caption=f"ms: median latency per image, CPU, score threshold {SERVING_PARAMS['score_threshold']}",
+)
+for column in ("Model", "Bundle / engine", "mAP", "mAP@50", "ms"):
+    table.add_column(column)
+
+n_model_families = len(MODELS)
+for i_model_family, (model_label, model_name) in enumerate(MODELS.items()):
+    bundle_runs = export_bundles(model_name)
+    for i_run, (run_label, (path_bundle, engine)) in progress_bar(
+        enumerate(bundle_runs.items()),
+        description=f"Benchmarking {model_label} ({i_model_family + 1}/{n_model_families})",
+        total=len(bundle_runs),
+    ):
+        # Accuracy with the bundle's default (low) score threshold, as metrics need all detections
+        model = inference_model_from_path(path_bundle, inference_engine=engine)
+        with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
+            metrics, _ = run_benchmark(dataset=dataset, model=model)
+
+        latency_ms = median_latency_ms(path_bundle, engine, images)
+        mAP = metrics["object_detection/mAP"]
+        mAP_50 = metrics["object_detection/mAP_50"]
+        table.add_row(model_label if i_run == 0 else "", run_label, f"{mAP:.3f}", f"{mAP_50:.3f}", f"{latency_ms:.1f}")
+    table.add_section()
+
+
+rprint(table)
+rprint(f"Bundles and prediction images in '{PATH_OUTPUT}'")

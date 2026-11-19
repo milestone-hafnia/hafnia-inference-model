@@ -1,331 +1,407 @@
 {
-    "dataset_name": "coco-2017-tiny",
-    "version": "1.0.0",
-    "dataset_title": null,
-    "description": null,
     "tasks": [
         {
             "primitive": "Bbox",
             "classes": [
                 {
                     "name": "person",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bicycle",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "car",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "motorcycle",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "airplane",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bus",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "train",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "truck",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "boat",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "traffic light",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "fire hydrant",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "stop sign",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "parking meter",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bench",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bird",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cat",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "dog",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "horse",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sheep",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cow",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "elephant",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bear",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "zebra",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "giraffe",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "backpack",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "umbrella",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "handbag",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "tie",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "suitcase",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "frisbee",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "skis",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "snowboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sports ball",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "kite",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "baseball bat",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "baseball glove",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "skateboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "surfboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "tennis racket",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bottle",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "wine glass",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cup",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "fork",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "knife",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "spoon",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bowl",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "banana",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "apple",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sandwich",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "orange",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "broccoli",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "carrot",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "hot dog",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "pizza",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "donut",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cake",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "chair",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "couch",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "potted plant",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bed",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "dining table",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "toilet",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "tv",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "laptop",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "mouse",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "remote",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "keyboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cell phone",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "microwave",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "oven",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "toaster",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sink",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "refrigerator",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "book",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "clock",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "vase",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "scissors",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "teddy bear",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "hair drier",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "toothbrush",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 }
             ],
             "name": "object_detection"
@@ -335,332 +411,525 @@
             "classes": [
                 {
                     "name": "person",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bicycle",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "car",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "motorcycle",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "airplane",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bus",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "train",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "truck",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "boat",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "traffic light",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "fire hydrant",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "stop sign",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "parking meter",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bench",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bird",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cat",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "dog",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "horse",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sheep",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cow",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "elephant",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bear",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "zebra",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "giraffe",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "backpack",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "umbrella",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "handbag",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "tie",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "suitcase",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "frisbee",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "skis",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "snowboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sports ball",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "kite",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "baseball bat",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "baseball glove",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "skateboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "surfboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "tennis racket",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bottle",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "wine glass",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cup",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "fork",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "knife",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "spoon",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bowl",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "banana",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "apple",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sandwich",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "orange",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "broccoli",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "carrot",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "hot dog",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "pizza",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "donut",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cake",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "chair",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "couch",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "potted plant",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "bed",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "dining table",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "toilet",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "tv",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "laptop",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "mouse",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "remote",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "keyboard",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "cell phone",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "microwave",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "oven",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "toaster",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "sink",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "refrigerator",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "book",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "clock",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "vase",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "scissors",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "teddy bear",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "hair drier",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 },
                 {
                     "name": "toothbrush",
-                    "attributes": null
+                    "attributes": null,
+                    "skeleton": null
                 }
             ],
             "name": "mask_detection"
+        },
+        {
+            "primitive": "Skeleton",
+            "classes": [
+                {
+                    "name": "person",
+                    "attributes": null,
+                    "skeleton": {
+                        "keypoint_names": [
+                            "nose",
+                            "left_eye",
+                            "right_eye",
+                            "left_ear",
+                            "right_ear",
+                            "left_shoulder",
+                            "right_shoulder",
+                            "left_elbow",
+                            "right_elbow",
+                            "left_wrist",
+                            "right_wrist",
+                            "left_hip",
+                            "right_hip",
+                            "left_knee",
+                            "right_knee",
+                            "left_ankle",
+                            "right_ankle"
+                        ],
+                        "edges": [
+                            {
+                                "index_start": 15,
+                                "index_end": 13
+                            },
+                            {
+                                "index_start": 13,
+                                "index_end": 11
+                            },
+                            {
+                                "index_start": 16,
+                                "index_end": 14
+                            },
+                            {
+                                "index_start": 14,
+                                "index_end": 12
+                            },
+                            {
+                                "index_start": 11,
+                                "index_end": 12
+                            },
+                            {
+                                "index_start": 5,
+                                "index_end": 11
+                            },
+                            {
+                                "index_start": 6,
+                                "index_end": 12
+                            },
+                            {
+                                "index_start": 5,
+                                "index_end": 6
+                            },
+                            {
+                                "index_start": 5,
+                                "index_end": 7
+                            },
+                            {
+                                "index_start": 6,
+                                "index_end": 8
+                            },
+                            {
+                                "index_start": 7,
+                                "index_end": 9
+                            },
+                            {
+                                "index_start": 8,
+                                "index_end": 10
+                            },
+                            {
+                                "index_start": 1,
+                                "index_end": 2
+                            },
+                            {
+                                "index_start": 0,
+                                "index_end": 1
+                            },
+                            {
+                                "index_start": 0,
+                                "index_end": 2
+                            },
+                            {
+                                "index_start": 1,
+                                "index_end": 3
+                            },
+                            {
+                                "index_start": 2,
+                                "index_end": 4
+                            },
+                            {
+                                "index_start": 3,
+                                "index_end": 5
+                            },
+                            {
+                                "index_start": 4,
+                                "index_end": 6
+                            }
+                        ]
+                    }
+                }
+            ],
+            "name": "pose_estimation"
         }
     ],
+    "dataset_name": "coco-2017-tiny",
+    "version": "1.0.0",
+    "dataset_title": "COCO 2017 (Tiny)",
+    "description": null,
     "reference_bibtex": "ReferenceIsMissing!",
     "reference_paper_url": "https://arxiv.org/abs/1405.0312",
     "reference_dataset_page": "https://cocodataset.org/#home",
     "meta": null,
-    "format_version": "0.3.1",
-    "updated_at": "2026-03-19T23:07:29.601280"
+    "format_version": "0.3.3",
+    "updated_at": "2026-09-25T11:19:21.127790"
 }

@@ -30,8 +30,6 @@ from inference_model_core import (
 )
 from inference_model_core.primitives import bboxes_from_input_xyxy
 
-PATH_MICRO_COCO = Path(__file__).parent / "data" / "micro-coco-2017"
-
 DUMMY_CLASS_NAMES = ["car", "person"]
 DUMMY_INPUT_SIZE = 32
 DUMMY_DETECTIONS = {

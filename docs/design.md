@@ -497,7 +497,12 @@ package-openvino/
 │   ├── export_torchvision_to_onnx.py
 │   ├── export_onnx_to_openvino.py
 │   └── benchmark.py
+├── examples/
+│   ├── example_inference_model.py   # basic flow: export, run on ORT, convert, run on OpenVINO, draw, benchmark
+│   └── example_compare_models.py    # models x engines/formats: mAP + latency table
 └── tests/
+    ├── micro_datasets.py            # creates tests/data/micro-* from the Hafnia platform (8 COCO images)
+    └── data/micro-coco-2017/
 ```
 
 Dependency rules (worth enforcing with a test or lint rule):
@@ -563,14 +568,23 @@ Two export contracts (design review, point 1):
 | Batching | yes | no (image by image) |
 
 Measured against the original torch models on the micro COCO images in `tests/data`
-(detections matched by IoU and class):
+(detections matched by IoU and class). The SSD numbers are from the first 3-image micro dataset;
+the tests check the same limits on the current 8 images.
 
 - **SSD, image already 320 × 320** (resize is an identity on both sides): 93 detections
   ≥ 0.05, worst IoU 1.0000, worst score difference 1.2e-6.
 - **SSD, original image sizes** (OpenCV resize outside the graph vs torch resize in the
   graph): worst IoU 0.9925, worst score difference 0.008.
-- **Faster R-CNN:** 28 detections ≥ 0.05, worst IoU 1.0000, worst score difference 1.2e-5, no extra
-  detections.
+- **Faster R-CNN** (8 images): 65 detections ≥ 0.05, the same on ONNX Runtime and OpenVINO, worst
+  score difference 1.8e-5, no extra detections. Also checked at five input sizes.
+
+**In-graph resize, Faster R-CNN.** torchvision scales by `min(320 / shortest side, 640 / longest
+side)` and floors `side × scale`. Eager torch computes that in double precision, the traced graph
+in float32, where an exact result can drop just below the integer: 400 × 640 resized to 319 × 511
+instead of 320 × 512. The detections then shifted (IoU 0.988, scores off by up to 0.07). Found when
+the micro dataset grew to 8 images. The exporter computes the size in int64 instead
+(`side × 320 // shortest`), which is exact. In rare cases eager torch's own double rounding could
+come out one pixel lower than the exact size.
 
 **Images without proposals, Faster R-CNN.** Blank, uniform and noise frames get no proposals
 from the RPN, so the graph must run with zero boxes. torchvision handles that case in ways

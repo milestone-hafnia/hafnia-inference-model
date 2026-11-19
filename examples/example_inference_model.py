@@ -1,0 +1,82 @@
+"""Generic model export and inference:
+
+    1) torchvision model -> ONNX bundle
+    2) Run the ONNX bundle with ONNX Runtime
+    3) Convert the ONNX bundle to an OpenVINO bundle
+    4) Run the OpenVINO bundle with OpenVINO
+    5) Visualize the predictions
+    6) Benchmark the model on a dataset with Hafnia's benchmark
+
+A model bundle is a zip with the model files and a 'model_info.json' that describes the model: tasks,
+input tensors, preprocessing and postprocessing (decoder) settings. 'inference_model_from_path' reads the
+model info and picks the implementation (engine + model family) that runs it, so steps 2 and 4 are the
+same code. Predictions are Hafnia primitives, here 'Bbox' with normalized coordinates.
+
+Run from the repo root (needs all extras: 'uv sync --all-extras'):
+
+    uv run python examples/example_inference_model.py
+
+See 'example_compare_models.py' for several models and engines benchmarked side by side.
+"""
+
+from pathlib import Path
+
+from hafnia.dataset.benchmark.benchmark import InferenceModel, run_benchmark
+from hafnia.dataset.hafnia_dataset import HafniaDataset, Primitive
+from hafnia.dataset.hafnia_dataset_types import Sample
+from hafnia.dataset.image_visualizations import draw_annotations
+from PIL import Image
+from rich import print as rprint
+
+from inference_model_core import inference_model_from_path, read_model_info
+from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
+from model_exporters.torchvision_detection import export_pretrained_torchvision_detection
+
+##### PREPARE EXAMPLE #####
+MODEL_NAME = "ssdlite320_mobilenet_v3_large"  # Or "fasterrcnn_mobilenet_v3_large_320_fpn"
+
+PATH_DATASET = Path(__file__).parents[1] / "tests" / "data" / "micro-coco-2017"
+PATH_OUTPUT = Path(".data") / "examples" / "inference_model"
+PATH_ONNX = PATH_OUTPUT / f"{MODEL_NAME}_onnx.zip"
+PATH_OPENVINO = PATH_OUTPUT / f"{MODEL_NAME}_openvino.zip"
+PATH_VISUALIZATION = PATH_OUTPUT / "ground_truth_onnx_openvino.png"
+
+#  An image from the micro dataset (8 COCO images, see 'tests/micro_datasets.py')
+dataset = HafniaDataset.from_path(PATH_DATASET)
+sample = Sample(**dataset[4])
+image = sample.read_image()
+##########################
+
+
+# 1) Export a pretrained torchvision model to an ONNX bundle. This is the only step that needs torch.
+PATH_ONNX = export_pretrained_torchvision_detection(MODEL_NAME, path_bundle=PATH_ONNX, overwrite=True)
+model_info = read_model_info(PATH_ONNX)
+rprint(f"1) Exported '{PATH_ONNX}'")
+rprint(f"   Input: {model_info.runtime.input.tensors[0].shape}, decoder: '{model_info.runtime.postprocessing.decoder}'")
+
+# 2) Load the ONNX bundle from path and run inference with ONNX Runtime
+model_onnx: InferenceModel = inference_model_from_path(PATH_ONNX, postprocessing_params={"score_threshold": 0.6})
+predictions_onnx: list[Primitive] = model_onnx.predict(image)
+
+# 3) Convert the ONNX bundle to OpenVINO IR
+PATH_OPENVINO = export_onnx_bundle_to_openvino(PATH_ONNX, path_bundle=PATH_OPENVINO, overwrite=True)
+rprint(f"3) Converted to '{PATH_OPENVINO}'")
+
+# 4) Load the OpenVINO bundle from path and run inference with OpenVINO
+model_openvino: InferenceModel = inference_model_from_path(
+    PATH_OPENVINO, postprocessing_params={"score_threshold": 0.3}
+)
+predictions_openvino: list[Primitive] = model_openvino.predict(image)
+
+# 5) Model predictions are standardized with Hafnia primitives
+image_openvino = draw_annotations(image=image, primitives=predictions_openvino)
+Image.fromarray(image_openvino).save(PATH_VISUALIZATION)
+rprint(f"5) Visualization saved to '{PATH_VISUALIZATION}'")
+
+# 6) Every model implements Hafnia's 'InferenceModel', so Hafnia's benchmark runs on it: it predicts on
+# all samples, stores the predictions as a new task in a copy of the dataset and computes metrics against
+# the ground truth. Load the model with the bundle's default (low) score threshold, as metrics need all
+# detections, not only the confident ones.
+model_benchmark = inference_model_from_path(PATH_OPENVINO)
+metrics, dataset_predictions = run_benchmark(dataset=dataset, model=model_benchmark)
+rprint(f"6) Benchmark metrics: {metrics}")

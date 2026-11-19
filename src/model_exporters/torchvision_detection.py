@@ -29,6 +29,7 @@ from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
 from torch import nn
 from torchvision.models import WeightsEnum, detection
+from torchvision.models.detection import transform as detection_transform
 from torchvision.models.detection._utils import BoxCoder
 from torchvision.models.detection.faster_rcnn import FasterRCNN
 from torchvision.models.detection.image_list import ImageList
@@ -337,20 +338,58 @@ def _clip_boxes_to_image_export(boxes: torch.Tensor, size: Tuple[int, int]) -> t
     return torch.stack([clipped[0], clipped[2], clipped[1], clipped[3]], dim=-1)
 
 
-@contextlib.contextmanager
-def _zero_box_safe_ops() -> Iterator[None]:
-    """Use zero-box-safe versions of torchvision's box ops while exporting a two-stage detector.
+_original_resize_image_and_masks = detection_transform._resize_image_and_masks
 
-    The RPN and ROI heads call these through the 'torchvision.ops.boxes' module, so patching the module
-    attributes is enough. Only active during export.
+
+def _resize_image_export(
+    image: torch.Tensor,
+    self_min_size: int,
+    self_max_size: int,
+    target: Optional[Dict[str, torch.Tensor]] = None,
+    fixed_size: Optional[Tuple[int, int]] = None,
+) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
+    """torchvision's '_resize_image_and_masks' (inference) with the output size computed in integers.
+
+    torchvision scales by 'min(min_size / shortest side, max_size / longest side)' and floors 'side * scale'.
+    Eager torch does that in double precision, the traced graph in float32, where an exact result such as
+    400 * 0.8 = 320 can come out as 319.99998 and floor to 319. That shifted the detections of images whose
+    resized size is an exact integer (e.g. 400 x 640). Here the size is 'side * numerator // denominator' in
+    int64, which is exact.
     """
-    original = box_ops.batched_nms, box_ops.clip_boxes_to_image
-    box_ops.batched_nms = _batched_nms_export  # type: ignore[assignment]
-    box_ops.clip_boxes_to_image = _clip_boxes_to_image_export  # type: ignore[assignment]
+    if target is not None or fixed_size is not None:
+        return _original_resize_image_and_masks(image, self_min_size, self_max_size, target, fixed_size)
+    shape = torch._shape_as_tensor(image)[-2:]
+    shortest, longest = shape.min(), shape.max()
+    # The constraint that gives the smaller scale, compared without division
+    use_min_size = self_min_size * longest <= self_max_size * shortest
+    numerator = torch.where(use_min_size, torch.tensor(self_min_size), torch.tensor(self_max_size))
+    denominator = torch.where(use_min_size, shortest, longest)
+    size = torch.div(shape * numerator, denominator, rounding_mode="floor")
+    resized = F.interpolate(image[None], size=[size[0], size[1]], mode="bilinear", align_corners=False)  # type: ignore[list-item]
+    return resized[0], target
+
+
+@contextlib.contextmanager
+def _export_safe_ops() -> Iterator[None]:
+    """Use export-safe versions of torchvision functions while exporting a two-stage detector.
+
+    The detection modules call these through their modules ('torchvision.ops.boxes' and
+    'torchvision.models.detection.transform'), so patching the module attributes is enough. Only active
+    during export.
+    """
+    patches = [
+        (box_ops, "batched_nms", _batched_nms_export),
+        (box_ops, "clip_boxes_to_image", _clip_boxes_to_image_export),
+        (detection_transform, "_resize_image_and_masks", _resize_image_export),
+    ]
+    originals = [(module, name, getattr(module, name)) for module, name, _ in patches]
+    for module, name, replacement in patches:
+        setattr(module, name, replacement)
     try:
         yield
     finally:
-        box_ops.batched_nms, box_ops.clip_boxes_to_image = original
+        for module, name, original in originals:
+            setattr(module, name, original)
 
 
 def _export_full_graph(
@@ -359,12 +398,13 @@ def _export_full_graph(
     runtime_score_threshold = model.roi_heads.score_thresh
     export_model = copy.deepcopy(model).eval()
     export_model.roi_heads.score_thresh = min(FULL_GRAPH_MIN_SCORE, runtime_score_threshold)
-    # Images without proposals (e.g. blank frames) are common in video. torchvision handles zero boxes with
-    # Python branches and reshapes that don't survive tracing: replace them for the export (see the helpers).
+    # torchvision handles images without proposals (e.g. blank frames, common in video) with Python branches
+    # and reshapes that don't survive tracing, and computes the resize in float32 when traced. Replace those
+    # parts for the export (see the helpers above).
     export_model.roi_heads.box_coder = _ExportBoxCoder.from_box_coder(export_model.roi_heads.box_coder)
 
     dummy = torch.rand(3, 480, 640)
-    with _zero_box_safe_ops():
+    with _export_safe_ops():
         _onnx_export(
             _FullGraphDetector(export_model),
             (dummy,),

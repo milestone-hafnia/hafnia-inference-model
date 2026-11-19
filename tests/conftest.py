@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).parent))  # Make 'helpers' importable from
 
 from hafnia.dataset.hafnia_dataset import HafniaDataset
 from hafnia.dataset.hafnia_dataset_types import Sample
-from helpers import PATH_MICRO_COCO, DummyDetector
+from helpers import DummyDetector
+from micro_datasets import get_micro_dataset
 
 from inference_model_core import register_flavor
 from inference_model_core.registry import unregister_flavor
@@ -27,7 +28,7 @@ def dummy_flavor():
 
 @pytest.fixture(scope="session")
 def micro_coco() -> HafniaDataset:
-    return HafniaDataset.from_path(PATH_MICRO_COCO)
+    return get_micro_dataset("micro-coco-2017")
 
 
 @pytest.fixture(scope="session")
