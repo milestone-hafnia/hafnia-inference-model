@@ -17,7 +17,6 @@ This is the only module importing torch/torchvision.
 import contextlib
 import copy
 import tempfile
-import warnings
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -48,13 +47,13 @@ from inference_model_core import (
     TensorInfo,
     write_bundle,
 )
+from model_exporters.onnx_export import DEFAULT_OPSET_VERSION, onnx_export
 
 FRAMEWORK = "torchvision"
 DECODER_ANCHOR_BOXES_NMS = "anchor_boxes_nms"
 DECODER_BOXES_SCORES_LABELS = "boxes_scores_labels"
 MODEL_FILENAME = "model.onnx"
 TASK_NAME = "object_detection"
-DEFAULT_OPSET_VERSION = 17
 # Score threshold baked into full-graph exports. The runtime 'score_threshold' filters on top of it.
 FULL_GRAPH_MIN_SCORE = 0.001
 # Placeholder categories in torchvision's COCO label space that are not real classes
@@ -232,7 +231,7 @@ def _export_ssd(ssd: SSD, path_onnx: Path, label_to_class_idx: List[int], opset_
     n_anchors, n_labels = network.anchors.shape[0], len(label_to_class_idx)
 
     dummy = torch.zeros(2, 3, height, width)
-    _onnx_export(
+    onnx_export(
         network,
         (dummy,),
         path_onnx,
@@ -420,7 +419,7 @@ def _export_full_graph(
 
     dummy = torch.rand(3, 480, 640)
     with _export_safe_ops():
-        _onnx_export(
+        onnx_export(
             _FullGraphDetector(export_model),
             (dummy,),
             path_onnx,
@@ -468,14 +467,3 @@ def _export_full_graph(
             "graph_max_detections": export_model.roi_heads.detections_per_img,
         },
     )
-
-
-def _onnx_export(module: nn.Module, args: tuple, path_onnx: Path, **kwargs) -> None:
-    # The TorchScript-based exporter handles torchvision detection models (data dependent control flow
-    # in the transform and NMS). Tracer and user warnings about these constructs are expected; the exported
-    # graphs are verified against torch in tests/model_exporters/test_torchvision_detection.py.
-    with warnings.catch_warnings(), torch.no_grad():
-        warnings.simplefilter("ignore", category=torch.jit.TracerWarning)
-        warnings.simplefilter("ignore", category=DeprecationWarning)
-        warnings.simplefilter("ignore", category=UserWarning)
-        torch.onnx.export(module.eval(), args, path_onnx.as_posix(), dynamo=False, do_constant_folding=True, **kwargs)

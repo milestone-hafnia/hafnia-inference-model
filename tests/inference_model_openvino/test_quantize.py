@@ -90,3 +90,18 @@ def test_quantize_needs_fp32_bundle_and_images(ssd, ssd_ir_fp16, images, tmp_pat
         quantize_bundle(ssd_ir_fp16, tmp_path / "int8.zip", images)
     with pytest.raises(ValueError, match="At least one calibration image"):
         quantize_bundle(ssd[2], tmp_path / "int8.zip", [])
+
+
+def test_resnet18_int8_agrees_with_fp32(resnet18, resnet18_ir, images, tmp_path):
+    path_int8 = quantize_bundle(resnet18[2], tmp_path / "resnet18_int8.zip", images)
+    fp32_model, int8_model = inference_model_from_path(resnet18_ir), inference_model_from_path(path_int8)
+    n_same = sum(fp32_model.predict(image)[0].class_idx == int8_model.predict(image)[0].class_idx for image in images)
+    assert n_same >= len(images) - 2
+
+
+def test_rfdetr_int8_accuracy_close_to_fp32(rfdetr, rfdetr_ir, images, micro_coco, tmp_path):
+    """RF-DETR is quantized in NNCF's transformer mode (quantization hint). The default dropped mAP to 0."""
+    path_int8 = quantize_bundle(rfdetr[2], tmp_path / "rfdetr_int8.zip", images)
+    assert read_model_info(path_int8).runtime.provenance["quantization"]["model_type"] == "transformer"
+    fp32_map, int8_map = mean_average_precision(rfdetr_ir, micro_coco), mean_average_precision(path_int8, micro_coco)
+    assert int8_map >= fp32_map - MAX_MAP_DROP, f"INT8 mAP {int8_map:.3f}, FP32 mAP {fp32_map:.3f}"

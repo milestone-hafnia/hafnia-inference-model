@@ -58,6 +58,30 @@ def frcnn(tmp_path_factory):
     return _export_onnx(tmp_path_factory, FRCNN_NAME)
 
 
+@pytest.fixture(scope="session")
+def resnet18(tmp_path_factory):
+    """Pretrained ResNet18 exported to an ONNX bundle. Returns (torch model, task, bundle path)."""
+    pytest.importorskip("torch")
+    from model_exporters.torchvision_classification import export_torchvision_classification, load_pretrained_model
+
+    model, task, image_size = load_pretrained_model("resnet18")
+    path_bundle = tmp_path_factory.mktemp("resnet18") / "resnet18.zip"
+    export_torchvision_classification(model, task, image_size, path_bundle, name="resnet18", variant="resnet18")
+    return model, task, path_bundle
+
+
+@pytest.fixture(scope="session")
+def rfdetr(tmp_path_factory):
+    """Pretrained RF-DETR Nano exported to an ONNX bundle. Returns (rfdetr model, categories, bundle path)."""
+    pytest.importorskip("rfdetr")
+    from model_exporters.rfdetr_detection import export_rfdetr_detection, load_pretrained_model
+
+    model, categories = load_pretrained_model("RFDETRNano")
+    path_bundle = tmp_path_factory.mktemp("rfdetr") / "RFDETRNano.zip"
+    export_rfdetr_detection(model, categories, path_bundle, name="RFDETRNano", variant="RFDETRNano")
+    return model, categories, path_bundle
+
+
 # OpenVINO IR bundles converted from the ONNX bundles above, shared by the OpenVINO tests
 def _convert_to_openvino(tmp_path_factory, path_onnx_bundle, precision):
     pytest.importorskip("openvino")
@@ -80,3 +104,13 @@ def ssd_ir_fp16(ssd, tmp_path_factory):
 @pytest.fixture(scope="session")
 def frcnn_ir(frcnn, tmp_path_factory):
     return _convert_to_openvino(tmp_path_factory, frcnn[2], "fp32")
+
+
+@pytest.fixture(scope="session")
+def resnet18_ir(resnet18, tmp_path_factory):
+    return _convert_to_openvino(tmp_path_factory, resnet18[2], "fp32")
+
+
+@pytest.fixture(scope="session")
+def rfdetr_ir(rfdetr, tmp_path_factory):
+    return _convert_to_openvino(tmp_path_factory, rfdetr[2], "fp32")

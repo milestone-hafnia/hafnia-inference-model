@@ -145,3 +145,18 @@ def test_preprocess_model_input(shape, layout, in_graph, expected_shape):
     assert list(inputs) == ["pixels"]
     assert inputs["pixels"].shape == expected_shape
     assert (meta.original_height, meta.original_width) == (20, 40)
+
+
+@pytest.mark.parametrize("size", [(224, 224), (384, 384), (600, 800)])
+def test_antialias_resize_matches_torchvision(size):
+    """'antialias' reproduces torchvision's tensor 'Resize' (antialias=True) on uint8 images, down and up."""
+    torch = pytest.importorskip("torch")
+    functional = pytest.importorskip("torchvision.transforms.functional")
+    image = random_image(480, 640, seed=1)
+    image = np.asarray(Image.fromarray(image).resize((320, 240)).resize((640, 480)))  # Smooth, like a photo
+    preprocessing = PreprocessingInfo(resize=ResizeInfo(mode="stretch", antialias=True), scale=None, dtype="uint8")
+    resized, _ = preprocess_image(image, preprocessing, input_hw=size, add_batch_dim=False)
+
+    reference = functional.resize(torch.from_numpy(image).permute(2, 0, 1).float() / 255, list(size))
+    reference = reference.permute(1, 2, 0).numpy() * 255
+    assert np.abs(resized.transpose(1, 2, 0).astype(np.float32) - reference).mean() < 0.5

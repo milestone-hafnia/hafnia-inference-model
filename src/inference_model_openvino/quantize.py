@@ -4,8 +4,9 @@ Generic over model families:
 
 - Calibration images are preprocessed with 'preprocess_model_input', the same model info driven function
   that runs at inference, so the model is calibrated on exactly the inputs it will see.
-- Graph parts that should stay in floating point (e.g. box decoding in the graph) come from the model
-  info's 'quantization_hints', written by the exporter that built the graph.
+- Graph parts that should stay in floating point (e.g. box decoding in the graph) and the model type
+  (transformer or not) come from the model info's 'quantization_hints', written by the exporter that built
+  the graph.
 """
 
 from pathlib import Path
@@ -63,7 +64,9 @@ def quantize_bundle(
         model = ov.Core().read_model(path_dir / runtime.file_path)
 
         calibration_dataset = nncf.Dataset(calibration_images, lambda image: preprocess_model_input(image, runtime)[0])
-        ignored_patterns = runtime.quantization_hints.ignored_node_patterns if runtime.quantization_hints else []
+        hints = runtime.quantization_hints
+        ignored_patterns = hints.ignored_node_patterns if hints else []
+        model_type = hints.model_type if hints else None
         # 'validate=False': a pattern may match nothing after conversion, which is not an error
         ignored_scope = nncf.IgnoredScope(patterns=ignored_patterns, validate=False) if ignored_patterns else None
         quantized_model = nncf.quantize(
@@ -72,6 +75,7 @@ def quantize_bundle(
             preset=nncf.QuantizationPreset(preset),
             subset_size=len(calibration_images),
             ignored_scope=ignored_scope,
+            model_type=nncf.ModelType.TRANSFORMER if model_type == "transformer" else None,
         )
 
     quantization = {
@@ -80,6 +84,7 @@ def quantize_bundle(
         "preset": preset,
         "calibration_samples": len(calibration_images),
         "ignored_node_patterns": ignored_patterns,
+        "model_type": model_type,
     }
     return write_openvino_bundle(
         quantized_model,

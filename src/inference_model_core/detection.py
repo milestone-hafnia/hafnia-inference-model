@@ -1,7 +1,9 @@
-"""Optional NumPy helpers for detection decoders: NMS, per-class candidate selection and label mapping.
+"""Optional NumPy helpers for detection decoders: NMS, per-class candidate selection, query top-k and label
+mapping.
 
-They reproduce torchvision's semantics ('torchvision.ops.batched_nms' and 'SSD.postprocess_detections'),
-so thresholding and NMS can run outside the exported graph. NumPy only: nothing here may depend on torch.
+They reproduce the source frameworks' semantics ('torchvision.ops.batched_nms', 'SSD.postprocess_detections',
+RF-DETR's 'PostProcess'), so thresholding and NMS can run outside the exported graph. NumPy only: nothing here
+may depend on torch.
 """
 
 from typing import List, Optional, Sequence, Tuple
@@ -108,3 +110,49 @@ def map_labels(labels: np.ndarray, label_to_class_idx: Sequence[int]) -> Tuple[n
     class_indices = mapping[labels]
     keep = class_indices >= 0
     return class_indices[keep], keep
+
+
+def sigmoid(values: np.ndarray) -> np.ndarray:
+    # Written with exp(-|x|) so large logits of either sign don't overflow
+    exp = np.exp(-np.abs(values))
+    return np.where(values >= 0, 1 / (1 + exp), exp / (1 + exp))
+
+
+def select_query_detections(
+    boxes_cxcywh: np.ndarray,
+    logits: np.ndarray,
+    num_select: int,
+    input_hw: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Detections of a DETR-style model (one box per query, sigmoid class scores), as RF-DETR's 'PostProcess'.
+
+    Takes the 'num_select' highest (query, class) scores over all queries and classes, so one query can give
+    detections for several classes. No NMS.
+
+    Args:
+        boxes_cxcywh: (Q, 4) boxes as (center x, center y, width, height), normalized to [0, 1].
+        logits: (Q, C) class logits.
+        num_select: Number of detections to keep.
+        input_hw: (height, width) of the model input, to scale boxes to input pixels.
+
+    Returns:
+        (boxes (K, 4) xyxy in model input pixels, scores (K,), labels (K,) as logit columns), by descending score.
+    """
+    scores_flat = sigmoid(logits.astype(np.float32)).reshape(-1)
+    num_select = min(num_select, scores_flat.size)
+    top = np.argpartition(-scores_flat, num_select - 1)[:num_select]
+    top = top[np.argsort(-scores_flat[top], kind="stable")]
+    queries, labels = np.divmod(top, logits.shape[1])
+
+    center_x, center_y, width, height = boxes_cxcywh[queries].astype(np.float32).T
+    input_height, input_width = input_hw
+    boxes = np.stack(
+        [
+            (center_x - width / 2) * input_width,
+            (center_y - height / 2) * input_height,
+            (center_x + width / 2) * input_width,
+            (center_y + height / 2) * input_height,
+        ],
+        axis=1,
+    )
+    return boxes, scores_flat[top], labels

@@ -115,3 +115,30 @@ def test_hafnia_benchmark_on_micro_coco(ssd, ssd_ir, micro_coco):
     assert all(math.isfinite(value) for value in openvino_metrics.values())
     for name, value in onnxruntime_metrics.items():
         assert openvino_metrics[name] == pytest.approx(value, abs=1e-3), name
+
+
+def test_classification_matches_onnxruntime(resnet18, resnet18_ir, images):
+    from inference_model_core.classification import softmax
+    from inference_model_openvino.flavors import OpenVINOTorchvisionClassification
+
+    reference, model = inference_model_from_path(resnet18[2]), inference_model_from_path(resnet18_ir)
+    assert type(model) is OpenVINOTorchvisionClassification
+    for image in images:
+        inputs, _ = reference.preprocess(image)
+        expected = softmax(reference.predict_raw(inputs)["logits"])
+        np.testing.assert_allclose(softmax(model.predict_raw(inputs)["logits"]), expected, atol=1e-4)
+        assert model.predict(image)[0].class_idx == reference.predict(image)[0].class_idx
+
+
+def test_rfdetr_matches_onnxruntime(rfdetr, rfdetr_ir, images):
+    """OpenVINO differs from ONNX Runtime in low-score queries of RF-DETR's transformer (boxes moved by up to 0.4 of
+    the image on the micro dataset), so only detections with score >= 0.1 are compared, in both directions."""
+    from inference_model_openvino.flavors import OpenVINORFDETRDetection
+
+    reference, model = inference_model_from_path(rfdetr[2]), inference_model_from_path(rfdetr_ir)
+    assert type(model) is OpenVINORFDETRDetection
+    settings = {"min_score": 0.1, "min_iou": 0.99, "max_score_diff": 1e-2}
+    for image in images:
+        expected, predicted = reference.predict(image), model.predict(image)
+        assert_detections_match(expected, predicted, **settings)
+        assert_detections_match(predicted, expected, **settings)

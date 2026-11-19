@@ -1,12 +1,13 @@
 """Benchmark several models on several engines and formats with the same code.
 
-For each torchvision model, the example exports an ONNX bundle and converts it to OpenVINO IR in FP32, FP16
-and INT8 (NNCF post-training quantization). Every bundle is then loaded with 'inference_model_from_path' and
+For each pretrained detection model, the example exports an ONNX bundle and converts it to OpenVINO IR in FP32,
+FP16 and INT8 (NNCF post-training quantization). Every bundle is then loaded with 'inference_model_from_path' and
 run through Hafnia's benchmark (accuracy) and a simple latency measurement:
 
     model                 bundle             engine
     SSDLite320            ONNX               ONNX Runtime
     Faster R-CNN 320      ONNX               OpenVINO (engine override)
+    RF-DETR Nano
                           OpenVINO IR FP32   OpenVINO
                           OpenVINO IR FP16   OpenVINO
                           OpenVINO IR INT8   OpenVINO
@@ -39,11 +40,12 @@ from rich.table import Table
 from inference_model_core import inference_model_from_path
 from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
 from inference_model_openvino.quantize import quantize_bundle
-from model_exporters.torchvision_detection import export_pretrained_torchvision_detection
+from model_exporters.registry import export_pretrained
 
 MODELS = {
     "SSDLite320": "ssdlite320_mobilenet_v3_large",
     "Faster R-CNN 320": "fasterrcnn_mobilenet_v3_large_320_fpn",
+    "RF-DETR Nano": "RFDETRNano",
 }
 SERVING_PARAMS = {"score_threshold": 0.3}  # Decoder settings for latency and visualization
 PATH_DATASET = Path(__file__).parents[1] / "tests" / "data" / "micro-coco-2017"
@@ -55,12 +57,12 @@ BundleRun = Tuple[Path, Optional[str]]
 
 
 def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dict[str, BundleRun]:
-    """Export a torchvision model to ONNX, convert and quantize it to OpenVINO IR, and list the ways to run them."""
+    """Export a pretrained model to ONNX, convert and quantize it to OpenVINO IR, and list the ways to run them."""
     path_onnx = PATH_OUTPUT / f"{model_name}_onnx.zip"
     path_fp32 = PATH_OUTPUT / f"{model_name}_openvino_fp32.zip"
     path_fp16 = PATH_OUTPUT / f"{model_name}_openvino_fp16.zip"
     path_int8 = PATH_OUTPUT / f"{model_name}_openvino_int8.zip"
-    export_pretrained_torchvision_detection(model_name, path_onnx, overwrite=True)
+    export_pretrained(model_name, path_onnx, overwrite=True)
     export_onnx_bundle_to_openvino(path_onnx, path_fp32, precision="fp32", overwrite=True)
     export_onnx_bundle_to_openvino(path_onnx, path_fp16, precision="fp16", overwrite=True)
     quantize_bundle(path_onnx, path_int8, calibration_images, overwrite=True)

@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from inference_model_core.detection import batched_nms, map_labels, nms, select_anchor_detections
+from inference_model_core.detection import (
+    batched_nms,
+    map_labels,
+    nms,
+    select_anchor_detections,
+    select_query_detections,
+)
 
 torch = pytest.importorskip("torch")
 torchvision_ops = pytest.importorskip("torchvision.ops")
@@ -77,3 +83,23 @@ def test_map_labels():
 
     with pytest.raises(ValueError, match="must be in"):
         map_labels(np.array([4]), label_to_class_idx=[-1, 0, -1, 1])
+
+
+def test_select_query_detections_matches_rfdetr_postprocess():
+    """Same scores, labels and boxes as RF-DETR's 'PostProcess' with the model input size as target size."""
+    torch = pytest.importorskip("torch")
+    postprocess_module = pytest.importorskip("rfdetr.models.postprocess")
+    rng = np.random.default_rng(0)
+    n_queries, n_columns, input_hw = 50, 7, (384, 512)
+    logits = rng.normal(size=(n_queries, n_columns)).astype(np.float32)
+    boxes = np.concatenate([rng.uniform(0.2, 0.8, (n_queries, 2)), rng.uniform(0.05, 0.3, (n_queries, 2))], axis=1)
+
+    expected = postprocess_module.PostProcess(num_select=30)(
+        {"pred_logits": torch.from_numpy(logits)[None], "pred_boxes": torch.from_numpy(boxes.astype(np.float32))[None]},
+        target_sizes=torch.tensor([input_hw]),
+    )[0]
+    boxes_xyxy, scores, labels = select_query_detections(boxes, logits, num_select=30, input_hw=input_hw)
+
+    assert np.allclose(scores, expected["scores"].numpy(), atol=1e-6)
+    assert np.array_equal(labels, expected["labels"].numpy())
+    assert np.allclose(boxes_xyxy, expected["boxes"].numpy(), atol=1e-3)

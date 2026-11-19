@@ -22,6 +22,14 @@ _INTERPOLATION_FLAGS = {
     "cubic": cv2.INTER_CUBIC,
     "area": cv2.INTER_AREA,
 }
+# PIL filters antialias when downscaling, like torchvision's tensor 'Resize' (antialias=True): within 0.25 gray
+# levels on average, where OpenCV's linear interpolation differs by 2-4 levels.
+_PIL_FILTERS = {
+    "linear": Image.Resampling.BILINEAR,
+    "nearest": Image.Resampling.NEAREST,
+    "cubic": Image.Resampling.BICUBIC,
+    "area": Image.Resampling.BOX,
+}
 
 
 @dataclass(frozen=True)
@@ -144,10 +152,14 @@ def _resize(
         )
 
     original_height, original_width = pixels.shape[:2]
-    interpolation = _INTERPOLATION_FLAGS[resize.interpolation]
+
+    def resize_to(width: int, height: int) -> np.ndarray:
+        if resize.antialias:
+            return np.asarray(Image.fromarray(pixels).resize((width, height), _PIL_FILTERS[resize.interpolation]))
+        return cv2.resize(pixels, (width, height), interpolation=_INTERPOLATION_FLAGS[resize.interpolation])
 
     if resize.mode == "stretch":
-        resized = cv2.resize(pixels, (target_width, target_height), interpolation=interpolation)
+        resized = resize_to(target_width, target_height)
         meta = PreprocessMeta(
             original_height=original_height,
             original_width=original_width,
@@ -162,7 +174,7 @@ def _resize(
     scale = min(target_height / original_height, target_width / original_width)
     new_height = max(1, round(original_height * scale))
     new_width = max(1, round(original_width * scale))
-    resized = cv2.resize(pixels, (new_width, new_height), interpolation=interpolation)
+    resized = resize_to(new_width, new_height)
 
     if resize.mode == "letterbox":
         pad_top = (target_height - new_height) // 2

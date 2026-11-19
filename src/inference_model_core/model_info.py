@@ -34,6 +34,13 @@ class ResizeInfo(BaseModel):
     height: Optional[int] = Field(default=None, description="Target height. 'None' takes it from the input shape")
     width: Optional[int] = Field(default=None, description="Target width. 'None' takes it from the input shape")
     interpolation: Literal["linear", "nearest", "cubic", "area"] = "linear"
+    antialias: bool = Field(
+        default=False,
+        description=(
+            "Low-pass filter when downscaling, as torchvision's 'Resize' does by default on tensors (and PIL). "
+            "Models trained with torchvision transforms need it to see the same pixels at inference"
+        ),
+    )
     pad_value: float = Field(default=0.0, description="Pixel value (0-255) used for padding")
 
 
@@ -96,6 +103,13 @@ class QuantizationHints(BaseModel):
         description=(
             "Regular expressions (full match) of graph node names to keep in floating point, e.g. box "
             "decoding and score computation in the graph, where 8 bit values lose pixel and score precision"
+        ),
+    )
+    model_type: Optional[Literal["transformer"]] = Field(
+        default=None,
+        description=(
+            "Model architecture for the quantizer's defaults: 'transformer' keeps transformer specific operations "
+            "(e.g. softmax, layer norm) in floating point. 'None' for convolutional networks"
         ),
     )
 

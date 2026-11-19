@@ -73,3 +73,22 @@ def test_hafnia_benchmark_on_micro_coco(ssd, micro_coco):
     assert metrics
     assert all(math.isfinite(value) for value in metrics.values())
     assert max(metrics.values()) > 0
+
+
+def test_classification_and_rfdetr_flavors_with_batching(resnet18, rfdetr, images):
+    """Both models have a dynamic batch axis: a batched call gives the same predictions as one call per image."""
+    pytest.importorskip("rfdetr")
+    from inference_model_onnxruntime.flavors import OnnxRuntimeRFDETRDetection, OnnxRuntimeTorchvisionClassification
+
+    classifier, detector = inference_model_from_path(resnet18[2]), inference_model_from_path(rfdetr[2])
+    assert type(classifier) is OnnxRuntimeTorchvisionClassification
+    assert type(detector) is OnnxRuntimeRFDETRDetection
+    assert classifier.supports_batching() and detector.supports_batching()
+
+    for image, (prediction,) in zip(images, classifier.predict_batch(images), strict=True):
+        (single,) = classifier.predict(image)
+        assert prediction.class_idx == single.class_idx
+        assert prediction.confidence == pytest.approx(single.confidence, abs=1e-5)
+    for image, predictions in zip(images, detector.predict_batch(images), strict=True):
+        settings = {"min_score": 0.05, "min_iou": 0.999, "max_score_diff": 1e-4}
+        assert_detections_match(detector.predict(image), predictions, **settings)

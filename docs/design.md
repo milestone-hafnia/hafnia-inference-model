@@ -388,7 +388,7 @@ class ModelInfo(TasksInfo):                       # existing class, extended
     runtime: Optional[RuntimeInfo] = None
 ```
 
-The `model_info.json` that `scripts/export_torchvision_to_onnx.py` writes for SSDLite320
+The `model_info.json` that `scripts/export_to_onnx.py` writes for SSDLite320
 (network-only export, shortened):
 
 ```json
@@ -489,14 +489,18 @@ package-openvino/
 │   │   ├── export_onnx.py           #   generic ONNX bundle → OpenVINO bundle
 │   │   ├── quantize.py              #   NNCF PTQ with model info driven calibration          [done]
 │   │   └── rt_info.py               #   ModelInfo → OpenVINO Model API rt_info               [later]
-│   ├── model_exporters/             # framework → ONNX bundle (torch lives only here)        [done]
-│   │   └── torchvision_detection.py
+│   ├── model_exporters/             # model → ONNX bundle (torch/rfdetr live only here)      [done]
+│   │   ├── registry.py              #   pretrained name or trainer archive → exporter
+│   │   ├── trainer_archive.py       #   trainer model archives (model_config.json + weights)
+│   │   ├── torchvision_detection.py
+│   │   ├── torchvision_classification.py
+│   │   └── rfdetr_detection.py
 │   └── package_openvino/            # glue that stays in the trainer: benchmarking, platform helpers
 │       ├── class_mapping.py         #   class mappings as data (JSON file or inline JSON)    [done]
 │       ├── latency.py               #   latency per stage: preprocess, model, postprocess    [done]
 │       └── platform.py              #   checkpoint discovery, dataset loading                [done]
 ├── scripts/
-│   ├── export_torchvision_to_onnx.py
+│   ├── export_to_onnx.py           # any supported model: trainer archive or pretrained name
 │   ├── export_onnx_to_openvino.py
 │   └── benchmark.py
 ├── examples/
@@ -533,7 +537,7 @@ Dependency rules (worth enforcing with a test or lint rule):
 
 ```mermaid
 flowchart LR
-    A[torchvision pretrained<br/>detection model] -->|export_torchvision_to_onnx.py| B[ONNX bundle<br/>model.onnx + model_info.json]
+    A[pretrained model or<br/>trainer archive] -->|export_to_onnx.py| B[ONNX bundle<br/>model.onnx + model_info.json]
     B -->|inference_model_from_path| C[OnnxRuntimeTorchvisionSSD /<br/>OnnxRuntimeTorchvisionDetection]
     B -->|export_onnx_to_openvino.py<br/>optional --quantize| D[OpenVINO bundle<br/>model.xml/.bin + model_info.json]
     D -->|inference_model_from_path| E[OpenVINOTorchvisionSSD /<br/>OpenVINOTorchvisionDetection]
@@ -555,7 +559,7 @@ All scripts follow the trainer conventions: `cyclopts` CLI, `HafniaLogger`, inpu
 from the checkpoint dir when present (otherwise a `--model-path`), output written to
 `logger.path_model()`, `auto_save_command_builder_schema` for the `*.schema.json` files.
 
-### 8.1 `scripts/export_torchvision_to_onnx.py` (implied by the brief)
+### 8.1 `scripts/export_to_onnx.py` (implied by the brief)
 
 Implemented: the script plus `model_exporters/torchvision_detection.py`. The library function
 `export_torchvision_detection()` also accepts fine-tuned models.
@@ -621,6 +625,56 @@ threshold to 0, which avoided the crash but produced up to 100 false detections 
 Postprocessing takes 86 ms at the torchvision default threshold of 0.001 (about 27k NMS
 candidates), 4.5 ms at 0.05 and 2.7 ms at 0.3. Benchmarks must state the threshold. Accuracy runs
 use a low one, latency runs a serving one.
+
+### 8.1b ResNet18 classification and RF-DETR detection
+
+Added on 2026-11-19, in the current design (network-only graphs, NumPy decoders), before the
+standardized-graph redesign.
+
+| | ResNet18 | RF-DETR (Nano, Small, Medium, Large) |
+|---|---|---|
+| Sources | pretrained ImageNet, trainer-classification archive | pretrained COCO, trainer-object-detection archive |
+| Framework / decoder | `torchvision` / `classification_logits` | `rfdetr` / `rfdetr_detection` |
+| Graph | `images [N, 3, S, S]` → `logits [N, C]` | RF-DETR's own ONNX export: `input [N, 3, R, R]` → `dets [N, 300, 4]` (normalized cx, cy, w, h), `labels [N, 300, C+1]` (logits) |
+| Decoder (NumPy) | softmax, top-1 `Classification` | sigmoid, top-300 over (query, class), box conversion. No NMS |
+| Preprocessing | stretch to S (archive `image_size`), ImageNet mean/std | stretch to R (384 for Nano), the model's mean/std |
+| Default threshold | 0 | 0.05 (trainer-object-detection's) |
+
+- **Trainer archives** (`model_exporters/trainer_archive.py`): a zip with `model_config.json`
+  (model name, task, settings) and the weights it names. Platform checkpoints of both trainers
+  use this format. `scripts/export_to_onnx.py` takes a checkpoint or `--model-path` archive,
+  otherwise a pretrained `--model-name`, and `model_exporters/registry.py` picks the exporter
+  (importing it only then, so torchvision exports don't need `rfdetr`).
+- **`rfdetr` dependency**: optional extra `rfdetr` (`rfdetr==1.8.1`, same torch 2.10.0), used by
+  `model_exporters` only.
+- **Placeholder classes**: RF-DETR's COCO logits use COCO ids (column 0 and 10 ids are unused,
+  `NotDefined_*` in the trainer's archives). They map to -1 in `label_to_class_idx`, so the task
+  has the 80 real classes, the same names as `coco-2017`.
+- **Antialiased resize** (`ResizeInfo.antialias`): both trainers resize with torchvision on
+  tensors, which antialiases when downscaling. OpenCV's linear resize differed by 2–4 gray levels
+  on average; PIL's bilinear resize matches torchvision within 0.25. Both exporters set it.
+- **Parity with the original models** (micro COCO, 8 images):
+  - ResNet18: same top-1 class on all images; probabilities within 1e-4 when the image is already
+    at the input size, within 0.012 on original sizes (uint8 vs float resize).
+  - RF-DETR Nano: scores within 1e-5 at identity resize. A few low-score boxes move (IoU down to
+    0.97 below score 0.2), boxes from score 0.2 match at IoU ≥ 0.9965. On original sizes all
+    confident detections match. A trainer archive with the pretrained weights gives the same
+    detections as the pretrained export.
+  - OpenVINO vs ONNX Runtime: ResNet18 probabilities within 1e-4. RF-DETR differs in low-score
+    queries (boxes moved by up to 0.4 of the image); detections from score 0.1 match at
+    IoU ≥ 0.99, scores within 0.01.
+- **INT8**: ResNet18 keeps the top-1 class on 7 of 8 images and its network is 2.5× faster
+  (5.3 vs 13.5 ms) on the dev laptop. RF-DETR needed NNCF's transformer mode (new
+  `QuantizationHints.model_type = "transformer"`): the default dropped mAP from 0.66 to 0.0;
+  transformer mode gives 0.668. Keeping the backbone only or the offsets/box heads in float
+  didn't help further. INT8 RF-DETR is slower than FP32 on the dev laptop (163 vs 108 ms network).
+- **Accuracy** (micro COCO, all engines and FP32/FP16): RF-DETR Nano mAP 0.660, mAP@50 0.793.
+- **Found in trainer-classification** (not changed here): `InferenceModelResNet18.predict` puts a
+  numpy image through `v2.Resize`, which leaves numpy arrays unchanged, so inference runs at the
+  original image size, not `image_size`. Training only resizes with `--resize`, while the archive
+  stores `image_size` (224 by default) either way. Our exporter follows the archive's
+  `image_size`, which matches training only when training resized.
+- Not supported yet: RF-DETR segmentation (`RFDETRSegNano`, masks) and keypoints.
 
 ### 8.2 `scripts/export_onnx_to_openvino.py`
 
@@ -751,7 +805,7 @@ The original plan, for reference:
    Updated after the design review: engine override, typed postprocessing parameters, default
    `preprocess()`.
 3. ✅ **torchvision → ONNX** exporter (SSDLite320 network-only, Faster R-CNN MobileNetV3 320
-   full graph) + ONNX Runtime flavors + `scripts/export_torchvision_to_onnx.py`. Parity
+   full graph) + ONNX Runtime flavors + `scripts/export_to_onnx.py`. Parity
    against the original torch models: see 8.1.
 4. ✅ **OpenVINO** flavors (loading both ONNX and IR bundles) + generic ONNX → OpenVINO exporter
    (save with `compress_to_fp16=False` unless FP16 is asked for, design review 4.2). Test: ORT vs
@@ -762,8 +816,9 @@ The original plan, for reference:
 7. 🔶 **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
    `hafnia runc launch-local ...` for each script, then a real experiment. Local Docker run
    done (2026-11-19), the platform experiment is not: see "Trainer package in Docker" below.
-8. (Stretch) Port RF-DETR as a second family (OpenVINO and ORT flavors with decoder `rfdetr_detection`). This is the real
-   test of genericity, because its post-processing differs a lot from torchvision's.
+8. ✅ Port RF-DETR as a second family (OpenVINO and ORT flavors with decoder `rfdetr_detection`). This is the real
+   test of genericity, because its post-processing differs a lot from torchvision's. Done together with ResNet18
+   classification, see 8.1b.
 
 ---
 
@@ -776,7 +831,7 @@ Run on 2026-11-19 with the micro dataset mounted as the experiment dataset:
 - `hafnia runc build-local trainer.zip`: builds, image 13.8 GB (see the risks below).
 - In the image, with `HAFNIA_CLOUD=true` and the platform folders mounted, all three scripts run
   in platform mode, each taking the previous output as its checkpoint:
-  `export_torchvision_to_onnx.py` (25 s, downloads the torchvision weights) →
+  `export_to_onnx.py` (25 s, downloads the torchvision weights) →
   `export_onnx_to_openvino.py --precision int8 --calibration-split-name all` (22 s) →
   `benchmark.py --split-name all` (13 s: mAP 0.317, 86 images/s on the dev laptop CPU).
 - `hafnia runc launch-local` itself could not be used on this machine:
@@ -824,7 +879,7 @@ The open questions from the first draft were answered on 2026-11-18:
 | # | Question | Decision |
 |---|---|---|
 | Q1 | How does a model get onto the platform? | **Checkpoint zip.** The bundle is a single zip placed in `MDI_CHECKPOINT_DIR`, the same mechanism the RF-DETR/ResNet trainers use. Locally, scripts take `--model-path`. |
-| Q2 | Which ONNX models are accepted in v1? | **Our own exporters only** (e.g. `export_torchvision_to_onnx.py`). Bring-your-own ONNX with a hand-written `model_info.json` comes later. |
+| Q2 | Which ONNX models are accepted in v1? | **Our own exporters only** (e.g. `export_to_onnx.py`). Bring-your-own ONNX with a hand-written `model_info.json` comes later. |
 | Q3 | What decides which flavor loads a model? | Dispatch on **`(inference_engine, framework, postprocessing.decoder)`**. Size (nano/large/...) becomes the informational `variant` field. |
 | Q4 | How are flavors built? | **Independent classes per engine** (as in the brief). Engine packages are self-contained; optional helpers in core; cross-engine parity tests guard against drift. |
 | Q5 | Where do the ModelInfo changes live? | **In package-openvino first, with a nested `runtime` section.** Upstream to `../hafnia` once the schema has settled. |
@@ -836,7 +891,7 @@ Assumptions not explicitly confirmed (defaults from the first draft):
 
 - **Q6:** `get_model_info()` returns `ModelInfo` (which contains `tasks: List[TaskInfo]`), not
   a bare `List[TaskInfo]`, so Hafnia's existing benchmark keeps working.
-- **Q10:** The missing second script is `scripts/export_torchvision_to_onnx.py` (section 8.1).
+- **Q10:** The missing second script is `scripts/export_to_onnx.py` (section 8.1; named `export_torchvision_to_onnx.py` until it supported more than torchvision).
 - **Q11:** `load_model` = bundle → model and `write_model` = model → bundle. The ONNX export
   targets OpenVINO IR, not pt2. The reference classification trainer is
   `../trainer-classification`. "ModelInference" means `InferenceModel`.

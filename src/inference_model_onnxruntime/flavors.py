@@ -6,7 +6,8 @@ from hafnia.dataset.primitives import Primitive
 from pydantic import BaseModel, ConfigDict, Field
 
 from inference_model_core import PreprocessMeta, RawTensors, register_flavor
-from inference_model_core.detection import map_labels, select_anchor_detections
+from inference_model_core.classification import softmax, top1_classification
+from inference_model_core.detection import map_labels, select_anchor_detections, select_query_detections
 from inference_model_core.primitives import bboxes_from_input_xyxy
 from inference_model_onnxruntime.engine import OnnxRuntimeModel
 
@@ -29,6 +30,23 @@ class BoxesScoresLabelsParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
     score_threshold: float = Field(ge=0.0, le=1.0)
     label_to_class_idx: List[int] = Field(description="Model label -> task class index, -1 = ignored")
+
+
+class RFDETRDetectionParams(BaseModel):
+    """Parameters of the 'rfdetr_detection' decoder: one box per query and sigmoid class logits, top-k outside the
+    graph."""
+
+    model_config = ConfigDict(extra="forbid")
+    score_threshold: float = Field(ge=0.0, le=1.0)
+    num_select: int = Field(gt=0, description="Highest scoring (query, class) pairs kept")
+    label_to_class_idx: List[int] = Field(description="Logit column -> task class index, -1 = ignored")
+
+
+class ClassificationLogitsParams(BaseModel):
+    """Parameters of the 'classification_logits' decoder: one logit per class, softmax outside the graph."""
+
+    model_config = ConfigDict(extra="forbid")
+    score_threshold: float = Field(default=0.0, ge=0.0, le=1.0, description="No prediction below this probability")
 
 
 @register_flavor
@@ -70,6 +88,49 @@ class OnnxRuntimeTorchvisionDetection(OnnxRuntimeModel):
         return bboxes_from_input_xyxy(  # type: ignore[return-value]
             outputs["boxes"][keep],
             outputs["scores"][keep],
+            class_indices,
+            task=self.model_info.tasks[0],
+            meta=meta,
+            score_threshold=self.params.score_threshold,
+        )
+
+
+@register_flavor
+class OnnxRuntimeTorchvisionClassification(OnnxRuntimeModel):
+    """torchvision classification models exported as network only ('model_exporters.torchvision_classification')."""
+
+    framework = "torchvision"
+    decoder = "classification_logits"
+    params_model = ClassificationLogitsParams
+    params: ClassificationLogitsParams
+
+    def postprocess(self, outputs: RawTensors, meta: PreprocessMeta) -> List[Primitive]:
+        probabilities = softmax(outputs["logits"][0])
+        return top1_classification(  # type: ignore[return-value]
+            probabilities, task=self.model_info.tasks[0], score_threshold=self.params.score_threshold
+        )
+
+
+@register_flavor
+class OnnxRuntimeRFDETRDetection(OnnxRuntimeModel):
+    """RF-DETR detection models ('model_exporters.rfdetr_detection')."""
+
+    framework = "rfdetr"
+    decoder = "rfdetr_detection"
+    params_model = RFDETRDetectionParams
+    params: RFDETRDetectionParams
+
+    def postprocess(self, outputs: RawTensors, meta: PreprocessMeta) -> List[Primitive]:
+        boxes, scores, labels = select_query_detections(
+            boxes_cxcywh=outputs["dets"][0],
+            logits=outputs["labels"][0],
+            num_select=self.params.num_select,
+            input_hw=(meta.input_height, meta.input_width),
+        )
+        class_indices, keep = map_labels(labels, self.params.label_to_class_idx)
+        return bboxes_from_input_xyxy(  # type: ignore[return-value]
+            boxes[keep],
+            scores[keep],
             class_indices,
             task=self.model_info.tasks[0],
             meta=meta,
