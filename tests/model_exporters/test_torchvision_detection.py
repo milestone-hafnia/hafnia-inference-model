@@ -4,6 +4,7 @@ The bundles run on the ONNX Runtime flavors, the reference engine. Parity is che
 IoU and class (not by index), on the micro COCO images.
 """
 
+import re
 from typing import List
 
 import cv2
@@ -12,10 +13,12 @@ import pytest
 from hafnia.dataset.primitives import Bbox
 from helpers import assert_detections_match
 
-from inference_model_core import inference_model_from_path, read_model_info
+from inference_model_core import inference_model_from_path, read_bundle_file, read_model_info
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
+import onnx  # noqa: E402
+
 from model_exporters.torchvision_detection import IGNORED_CATEGORIES  # noqa: E402
 
 pytestmark = pytest.mark.slow
@@ -59,6 +62,13 @@ def test_model_info(ssd, frcnn, micro_coco):
     assert ssd_info.runtime.preprocessing.resize is not None
     assert frcnn_info.runtime.input.tensors[0].shape == [3, None, None]
     assert frcnn_info.runtime.preprocessing.in_graph == ["resize", "normalize"]
+
+    # Quantization hints: every pattern must match a node, or it no longer protects the graph part it names
+    for info, path_bundle in ((ssd_info, ssd[2]), (frcnn_info, frcnn[2])):
+        graph = onnx.load_from_string(read_bundle_file(path_bundle, info.runtime.file_path)).graph
+        node_names = [node.name for node in graph.node]
+        for pattern in info.runtime.quantization_hints.ignored_node_patterns:
+            assert any(re.fullmatch(pattern, name) for name in node_names), pattern
 
 
 def test_ssd_matches_torch_without_resize(ssd, images):

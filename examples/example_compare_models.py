@@ -1,14 +1,18 @@
 """Benchmark several models on several engines and formats with the same code.
 
-For each torchvision model, the example exports an ONNX bundle and converts it to OpenVINO IR in FP32 and
-FP16. Every bundle is then loaded with 'inference_model_from_path' and run through Hafnia's benchmark
-(accuracy) and a simple latency measurement:
+For each torchvision model, the example exports an ONNX bundle and converts it to OpenVINO IR in FP32, FP16
+and INT8 (NNCF post-training quantization). Every bundle is then loaded with 'inference_model_from_path' and
+run through Hafnia's benchmark (accuracy) and a simple latency measurement:
 
     model                 bundle             engine
     SSDLite320            ONNX               ONNX Runtime
     Faster R-CNN 320      ONNX               OpenVINO (engine override)
                           OpenVINO IR FP32   OpenVINO
                           OpenVINO IR FP16   OpenVINO
+                          OpenVINO IR INT8   OpenVINO
+
+INT8 is calibrated on the same 8 images it is evaluated on, which flatters it: use a larger, separate dataset
+for real numbers (at least 300 calibration images are recommended).
 
 The loop body never depends on the model or the engine: the model info in each bundle selects the
 implementation. See 'example_inference_model.py' for the basic flow of a single model.
@@ -34,6 +38,7 @@ from rich.table import Table
 
 from inference_model_core import inference_model_from_path
 from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
+from inference_model_openvino.quantize import quantize_bundle
 from model_exporters.torchvision_detection import export_pretrained_torchvision_detection
 
 MODELS = {
@@ -49,19 +54,22 @@ PATH_OUTPUT.mkdir(parents=True, exist_ok=True)
 BundleRun = Tuple[Path, Optional[str]]
 
 
-def export_bundles(model_name: str) -> Dict[str, BundleRun]:
-    """Export a torchvision model to ONNX, convert it to OpenVINO IR, and list the ways to run them."""
+def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dict[str, BundleRun]:
+    """Export a torchvision model to ONNX, convert and quantize it to OpenVINO IR, and list the ways to run them."""
     path_onnx = PATH_OUTPUT / f"{model_name}_onnx.zip"
     path_fp32 = PATH_OUTPUT / f"{model_name}_openvino_fp32.zip"
     path_fp16 = PATH_OUTPUT / f"{model_name}_openvino_fp16.zip"
+    path_int8 = PATH_OUTPUT / f"{model_name}_openvino_int8.zip"
     export_pretrained_torchvision_detection(model_name, path_onnx, overwrite=True)
     export_onnx_bundle_to_openvino(path_onnx, path_fp32, precision="fp32", overwrite=True)
     export_onnx_bundle_to_openvino(path_onnx, path_fp16, precision="fp16", overwrite=True)
+    quantize_bundle(path_onnx, path_int8, calibration_images, overwrite=True)
     return {
         "ONNX / ONNX Runtime": (path_onnx, None),
         "ONNX / OpenVINO": (path_onnx, "openvino"),
         "IR FP32 / OpenVINO": (path_fp32, None),
         "IR FP16 / OpenVINO": (path_fp16, None),
+        "IR INT8 / OpenVINO": (path_int8, None),
     }
 
 
@@ -91,7 +99,7 @@ for column in ("Model", "Bundle / engine", "mAP", "mAP@50", "ms"):
 
 n_model_families = len(MODELS)
 for i_model_family, (model_label, model_name) in enumerate(MODELS.items()):
-    bundle_runs = export_bundles(model_name)
+    bundle_runs = export_bundles(model_name, calibration_images=images)
     for i_run, (run_label, (path_bundle, engine)) in progress_bar(
         enumerate(bundle_runs.items()),
         description=f"Benchmarking {model_label} ({i_model_family + 1}/{n_model_families})",
@@ -110,4 +118,4 @@ for i_model_family, (model_label, model_name) in enumerate(MODELS.items()):
 
 
 rprint(table)
-rprint(f"Bundles and prediction images in '{PATH_OUTPUT}'")
+rprint(f"Bundles in '{PATH_OUTPUT}'")

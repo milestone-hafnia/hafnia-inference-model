@@ -42,6 +42,7 @@ from inference_model_core import (
     ModelBundleInfo,
     PostprocessingInfo,
     PreprocessingInfo,
+    QuantizationHints,
     ResizeInfo,
     RuntimeInfo,
     TensorInfo,
@@ -58,6 +59,19 @@ DEFAULT_OPSET_VERSION = 17
 FULL_GRAPH_MIN_SCORE = 0.001
 # Placeholder categories in torchvision's COCO label space that are not real classes
 IGNORED_CATEGORIES = ("__background__", "N/A")
+
+# Graph parts to keep in floating point when quantizing, as ONNX node name patterns (see 'QuantizationHints').
+# Only the network (convolutions and linear layers) is quantized. Box decoding, softmax, resizing and NMS stay in
+# float: 8 bit pixel coordinates and scores cost accuracy, and NNCF quantizing the SSD decoding also made the
+# scores so noisy that NMS got 30x slower.
+SSD_QUANTIZATION_HINTS = QuantizationHints(ignored_node_patterns=[r"/(?!backbone/|head/).*"])
+FASTER_RCNN_QUANTIZATION_HINTS = QuantizationHints(
+    ignored_node_patterns=[
+        r"/model/transform/.*",
+        r"/model/rpn/(?!head/).*",
+        r"/model/roi_heads/(?!box_head/|box_predictor/).*",
+    ]
+)
 
 PretrainedModel = Tuple[Callable[..., nn.Module], WeightsEnum]
 PRETRAINED_MODELS: Dict[str, PretrainedModel] = {
@@ -249,6 +263,7 @@ def _export_ssd(ssd: SSD, path_onnx: Path, label_to_class_idx: List[int], opset_
             layout="NCHW",
             dtype="float32",
         ),
+        quantization_hints=SSD_QUANTIZATION_HINTS,
         postprocessing=PostprocessingInfo(
             decoder=DECODER_ANCHOR_BOXES_NMS,
             params={
@@ -443,6 +458,7 @@ def _export_full_graph(
             dtype="float32",
             in_graph=["resize", "normalize"],
         ),
+        quantization_hints=FASTER_RCNN_QUANTIZATION_HINTS,
         postprocessing=PostprocessingInfo(
             decoder=DECODER_BOXES_SCORES_LABELS,
             params={"score_threshold": runtime_score_threshold, "label_to_class_idx": label_to_class_idx},

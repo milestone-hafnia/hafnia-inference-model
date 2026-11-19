@@ -14,7 +14,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 |---|---|---|
 | `inference_model_core` | Model info schema, model bundles (zip/dir), `InferenceModelBase`, flavor registry, `inference_model_from_path`, shared preprocessing, NumPy NMS and primitive helpers. Engine agnostic, torch free. | Implemented |
 | `inference_model_onnxruntime` | ONNX Runtime flavors: `OnnxRuntimeTorchvisionSSD`, `OnnxRuntimeTorchvisionDetection` | Implemented |
-| `inference_model_openvino` | OpenVINO flavors (`OpenVINOTorchvisionSSD`, `OpenVINOTorchvisionDetection`) for ONNX and IR bundles, ONNX → OpenVINO conversion. NNCF quantization is planned. | Implemented |
+| `inference_model_openvino` | OpenVINO flavors (`OpenVINOTorchvisionSSD`, `OpenVINOTorchvisionDetection`) for ONNX and IR bundles, ONNX → OpenVINO conversion, INT8 quantization (NNCF) | Implemented |
 | `model_exporters` | Framework → ONNX bundle exporters (torchvision SSD and Faster R-CNN) | Implemented |
 | `package_openvino` | Trainer glue: checkpoint discovery, later benchmarking | Started |
 
@@ -23,14 +23,14 @@ Each top-level package under `src/` is a separate concept that can later move to
 | Script | Purpose |
 |---|---|
 | `scripts/export_torchvision_to_onnx.py` | Export a pretrained torchvision detection model to an ONNX bundle in the experiment model folder |
-| `scripts/export_onnx_to_openvino.py` | Convert an ONNX bundle (checkpoint or `--model-path`) to an OpenVINO IR bundle, FP32 or FP16 |
+| `scripts/export_onnx_to_openvino.py` | Convert an ONNX bundle (checkpoint or `--model-path`) to an OpenVINO IR bundle: FP32, FP16 or INT8 (calibrated on a Hafnia dataset) |
 
 ## Examples
 
 | Example | Shows |
 |---|---|
 | `examples/example_inference_model.py` | The basic flow: torchvision → ONNX bundle, run it with ONNX Runtime, convert to OpenVINO, run it with OpenVINO (same loading and `predict` code for both engines), draw the predictions next to the ground truth, and run Hafnia's benchmark |
-| `examples/example_compare_models.py` | SSDLite320 and Faster R-CNN on ONNX Runtime and OpenVINO (ONNX, IR FP32, IR FP16) in one loop, with Hafnia's benchmark (mAP) and latency in a table, and predictions drawn per model |
+| `examples/example_compare_models.py` | SSDLite320 and Faster R-CNN on ONNX Runtime and OpenVINO (ONNX, IR FP32, IR FP16, IR INT8) in one loop, with Hafnia's benchmark (mAP) and latency in a table |
 
 ```bash
 uv run python examples/example_inference_model.py  # Outputs go to .data/examples/
@@ -74,6 +74,10 @@ python scripts/export_torchvision_to_onnx.py --model-name fasterrcnn_mobilenet_v
 
 # Convert an ONNX bundle to OpenVINO IR (FP32 by default, or --precision fp16)
 python scripts/export_onnx_to_openvino.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip
+
+# INT8 quantization, calibrated on a Hafnia dataset ('name:version' or a dataset folder)
+python scripts/export_onnx_to_openvino.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip --precision int8 \
+    --calibration-dataset coco-2017:1.0.0
 ```
 
 ```python

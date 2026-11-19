@@ -85,6 +85,21 @@ class PostprocessingInfo(BaseModel):
     )
 
 
+class QuantizationHints(BaseModel):
+    """Graph knowledge for post-training quantization, written by the exporter that built the graph.
+
+    Quantizers stay model agnostic by reading these hints instead of knowing each model's graph.
+    """
+
+    ignored_node_patterns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Regular expressions (full match) of graph node names to keep in floating point, e.g. box "
+            "decoding and score computation in the graph, where 8 bit values lose pixel and score precision"
+        ),
+    )
+
+
 class TensorInfo(BaseModel):
     name: str
     shape: List[Optional[int]] = Field(description="Tensor shape. 'None' marks a dynamic dimension")
@@ -113,6 +128,7 @@ class RuntimeInfo(BaseModel):
     outputs: List[TensorInfo] = Field(default_factory=list)
     preprocessing: PreprocessingInfo
     postprocessing: PostprocessingInfo
+    quantization_hints: Optional[QuantizationHints] = None
     provenance: Optional[Dict[str, Any]] = Field(
         default=None, description="E.g. parent bundle, tool versions and quantization settings"
     )

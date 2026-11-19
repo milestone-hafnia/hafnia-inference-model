@@ -1,6 +1,6 @@
 # package-openvino: Generic Model Export and Inference
 
-Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–4 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export, the ONNX Runtime flavors, the OpenVINO flavors and ONNX → OpenVINO conversion.
+Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–5 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export, the ONNX Runtime flavors, the OpenVINO flavors, ONNX → OpenVINO conversion and INT8 quantization.
 Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
 `../trainer-object-detection` and `../trainer-classification`.
 
@@ -420,6 +420,7 @@ The `model_info.json` that `scripts/export_torchvision_to_onnx.py` writes for SS
       "params": {"score_threshold": 0.001, "nms_iou_threshold": 0.55, "topk_candidates": 300, "max_detections": 300,
                  "background_index": 0, "label_to_class_idx": [-1, 0, 1, 2, "... 91 entries"]}
     },
+    "quantization_hints": {"ignored_node_patterns": ["/(?!backbone/|head/).*"]},
     "provenance": {"exporter": "model_exporters.torchvision_detection", "torch": "2.10.0+cu128",
                    "torchvision": "0.25.0+cu128", "opset_version": 17}
   }
@@ -486,7 +487,7 @@ package-openvino/
 │   ├── inference_model_openvino/    # → later: inference-model-openvino repo                 [done]
 │   │   ├── engine.py / flavors.py   #   OpenVINO flavors (load ONNX and IR bundles)
 │   │   ├── export_onnx.py           #   generic ONNX bundle → OpenVINO bundle
-│   │   ├── quantize.py              #   NNCF PTQ with Hafnia-dataset calibration             [step 5]
+│   │   ├── quantize.py              #   NNCF PTQ with model info driven calibration          [done]
 │   │   └── rt_info.py               #   ModelInfo → OpenVINO Model API rt_info               [later]
 │   ├── model_exporters/             # framework → ONNX bundle (torch lives only here)        [done]
 │   │   └── torchvision_detection.py
@@ -644,7 +645,35 @@ Implemented in step 4: the script plus `inference_model_openvino/export_onnx.py`
 - SSDLite320 network latency on the dev laptop (i7-10875H, CPU, batch 1) is 7–13 ms median for
   every engine/format combination, within the noise of the machine. Real comparisons come from
   `benchmark.py` (step 6).
-- Not done yet: static-shape reshape (needed for NPU, maybe for NNCF) and Model API `rt_info`.
+- Not done yet: static-shape reshape (needed for NPU) and Model API `rt_info`.
+
+**INT8 quantization** (step 5): `--precision int8`, implemented in
+`inference_model_openvino/quantize.py` (`quantize_bundle`).
+
+- NNCF post-training quantization of an FP32 ONNX or IR bundle. Calibration images are
+  preprocessed with `preprocess_model_input`, the same model info driven function as at
+  inference, so no model specific calibration code is needed (design review, point 3).
+- Calibration data as in the trainers: the experiment's dataset on the platform, locally
+  `--calibration-dataset name:version` (default `coco-2017:1.0.0`) or a dataset folder.
+  `--calibration-split-name` (default `validation`, or `all`), `--calibration-samples` (default
+  300, a warning below that). `package_openvino/platform.py` has the dataset loading.
+- **Quantization hints.** NNCF's default quantized the SSD box decoding and softmax as well.
+  Pixel coordinates and scores in 8 bit dropped mAP from 0.348 to 0.152 on the micro dataset,
+  and the noisy scores let so many boxes through that NMS made `predict` 30× slower (450 ms).
+  Which graph parts must stay in float depends on the graph, so the exporter that built it
+  writes `runtime.quantization_hints.ignored_node_patterns` (ONNX node name regexes) and the
+  quantizer only reads them. SSD: everything outside `/backbone` and `/head`. Faster R-CNN:
+  only the backbone, the RPN head and the box head are quantized. A test checks that every
+  pattern still matches a node, so a renamed graph doesn't silently lose the protection.
+- Preset `mixed` by default (asymmetric activations, suited to MobileNetV3's hard-swish).
+  `performance` is the alternative.
+- Results, calibrated on the 8 micro images: SSDLite320 mAP 0.348 → 0.316 on those images. On
+  100 `coco-2017` images, FP32 0.307 vs INT8 0.295–0.298 (calibrated on 8 or 200 images,
+  either preset). Faster R-CNN 0.282 → 0.275. `model.bin`: SSDLite320 13.8 → 4.2 MB.
+- **No INT8 speed-up on the dev laptop**: the i7-10875H has AVX2 but no VNNI/AMX, and the
+  network takes the same time in INT8 as in FP32 (SSD 7.1 vs 7.2 ms, Faster R-CNN 34.5 vs
+  36.1 ms). INT8 latency has to be measured on the target hardware (a question for Intel).
+- Not done yet: `nncf.quantize_with_accuracy_control`.
 
 The original plan, for reference:
 
@@ -696,7 +725,7 @@ The original plan, for reference:
 4. ✅ **OpenVINO** flavors (loading both ONNX and IR bundles) + generic ONNX → OpenVINO exporter
    (save with `compress_to_fp16=False` unless FP16 is asked for, design review 4.2). Test: ORT vs
    OV FP32 raw outputs `allclose`, same primitives (the cross-engine parity test). See 8.2.
-5. **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance.
+5. ✅ **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance. See 8.2.
 6. **Benchmark script** with latency + accuracy. Compare ORT / OV-FP32 / OV-INT8 on a sample
    dataset.
 7. **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
