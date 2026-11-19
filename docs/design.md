@@ -1,6 +1,6 @@
 # package-openvino: Generic Model Export and Inference
 
-Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–5 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export, the ONNX Runtime flavors, the OpenVINO flavors, ONNX → OpenVINO conversion and INT8 quantization.
+Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–6 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export, the ONNX Runtime flavors, the OpenVINO flavors, ONNX → OpenVINO conversion, INT8 quantization and the benchmark script.
 Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
 `../trainer-object-detection` and `../trainer-classification`.
 
@@ -492,8 +492,9 @@ package-openvino/
 │   ├── model_exporters/             # framework → ONNX bundle (torch lives only here)        [done]
 │   │   └── torchvision_detection.py
 │   └── package_openvino/            # glue that stays in the trainer: benchmarking, platform helpers
-│       ├── latency.py                                                                        [step 6]
-│       └── platform.py              #   checkpoint discovery (done), dataset loading (step 6)
+│       ├── class_mapping.py         #   class mappings as data (JSON file or inline JSON)    [done]
+│       ├── latency.py               #   latency per stage: preprocess, model, postprocess    [done]
+│       └── platform.py              #   checkpoint discovery, dataset loading                [done]
 ├── scripts/
 │   ├── export_torchvision_to_onnx.py
 │   ├── export_onnx_to_openvino.py
@@ -693,6 +694,36 @@ The original plan, for reference:
 
 ### 8.3 `scripts/benchmark.py`
 
+Implemented in step 6: the script plus `package_openvino/latency.py` (`measure_latency`) and
+`package_openvino/class_mapping.py`.
+
+- Any bundle from the checkpoint or `--model-path`, `--inference-engine` to run it on another
+  engine, `--device` passed to the engine. Dataset as in the other scripts: the experiment's
+  dataset on the platform, locally `--dataset name:version` (default `coco-2017:1.0.0`) or a
+  dataset folder; `--split-name` (default `test`, or `all`), `--samples`, `--batch-size`.
+- **Accuracy**: Hafnia's `run_inference_on_dataset` + `metric_calculations`, unchanged, with the
+  bundle's default (low) score threshold. `--model-class-mapping` / `--dataset-class-mapping`
+  take a JSON file or inline JSON object and are applied with `class_mapper(method=
+  "remove_undefined")`, as in the RF-DETR benchmark. Splits without ground truth only run
+  inference. The predictions (annotations only) are written to the artifacts folder.
+- **Latency**: `measure_latency` times preprocess, model (`predict_raw_list`) and postprocess
+  per batch after `--warmup` untimed batches, on `--latency-samples` loaded images. Reports
+  mean, p50, p90, p99 per stage in ms and throughput in images/s. The latency run uses
+  `--latency-score-threshold` (default 0.3), because postprocessing time depends on it.
+  `InferenceModelBase.predict_raw_list` (the engine part of `predict_batch`) was split out so
+  the stages can be timed without copying the batching logic.
+- Everything is logged through `HafniaLogger`: configuration (model, flavor, engine and version,
+  device, format, precision, input shapes, dataset, split, batch size, settings) and metrics
+  (`object_detection/mAP`, ..., `latency/model_p90_ms`, ...), plus a summary table.
+- Measured on the dev laptop (CPU), `coco-2017` test split (69 images): Faster R-CNN ONNX on
+  OpenVINO mAP@50 0.514, model 37 ms, 25 images/s. SSDLite320 INT8 on the micro dataset:
+  preprocess 2.4 ms, model 7.4 ms, postprocess 2.0 ms, 84 images/s. Batch size 4 is slower on
+  this CPU (68 images/s).
+- Not done yet: throughput mode (OpenVINO async infer requests), `--task-name` for datasets
+  with several tasks of the model's primitive.
+
+The original plan, for reference:
+
 - Input: **any** bundle (`inference_model_from_path`), dataset, split, `--samples`,
   `--device` (default `CPU`; passed through to the engine, so `GPU`/`NPU`/`AUTO` work where
   available; Q7), `--batch-size`, `--warmup`, class-mapping options, `--task-name` when the
@@ -726,8 +757,8 @@ The original plan, for reference:
    (save with `compress_to_fp16=False` unless FP16 is asked for, design review 4.2). Test: ORT vs
    OV FP32 raw outputs `allclose`, same primitives (the cross-engine parity test). See 8.2.
 5. ✅ **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance. See 8.2.
-6. **Benchmark script** with latency + accuracy. Compare ORT / OV-FP32 / OV-INT8 on a sample
-   dataset.
+6. ✅ **Benchmark script** with latency + accuracy. Compare ORT / OV-FP32 / OV-INT8 on a sample
+   dataset. See 8.3 (and `examples/example_compare_models.py` for the comparison).
 7. **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
    `hafnia runc launch-local ...` for each script, then a real experiment.
 8. (Stretch) Port RF-DETR as a second family (OpenVINO and ORT flavors with decoder `rfdetr_detection`). This is the real

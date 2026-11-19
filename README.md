@@ -16,7 +16,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 | `inference_model_onnxruntime` | ONNX Runtime flavors: `OnnxRuntimeTorchvisionSSD`, `OnnxRuntimeTorchvisionDetection` | Implemented |
 | `inference_model_openvino` | OpenVINO flavors (`OpenVINOTorchvisionSSD`, `OpenVINOTorchvisionDetection`) for ONNX and IR bundles, ONNX → OpenVINO conversion, INT8 quantization (NNCF) | Implemented |
 | `model_exporters` | Framework → ONNX bundle exporters (torchvision SSD and Faster R-CNN) | Implemented |
-| `package_openvino` | Trainer glue: checkpoint discovery, later benchmarking | Started |
+| `package_openvino` | Trainer glue: checkpoint and dataset loading, latency measurement, class mappings | Implemented |
 
 ## Scripts
 
@@ -24,6 +24,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 |---|---|
 | `scripts/export_torchvision_to_onnx.py` | Export a pretrained torchvision detection model to an ONNX bundle in the experiment model folder |
 | `scripts/export_onnx_to_openvino.py` | Convert an ONNX bundle (checkpoint or `--model-path`) to an OpenVINO IR bundle: FP32, FP16 or INT8 (calibrated on a Hafnia dataset) |
+| `scripts/benchmark.py` | Accuracy (Hafnia metrics, optional class mappings) and latency per stage (preprocess, model, postprocess) of any bundle on any engine and device |
 
 ## Examples
 
@@ -78,6 +79,9 @@ python scripts/export_onnx_to_openvino.py --model-path ssdlite320_mobilenet_v3_l
 # INT8 quantization, calibrated on a Hafnia dataset ('name:version' or a dataset folder)
 python scripts/export_onnx_to_openvino.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip --precision int8 \
     --calibration-dataset coco-2017:1.0.0
+
+# Benchmark accuracy and latency of any bundle (here an ONNX bundle run on OpenVINO)
+python scripts/benchmark.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip --inference-engine openvino
 ```
 
 ```python

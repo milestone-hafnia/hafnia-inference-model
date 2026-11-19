@@ -151,14 +151,19 @@ class InferenceModelBase(InferenceModel):
         preprocessed = [self.preprocess(image) for image in images]
         inputs = [single_inputs for single_inputs, _ in preprocessed]
         metas = [meta for _, meta in preprocessed]
-
-        if self.supports_batching() and len(images) > 1:
-            batch_outputs = self.predict_raw_batch(self.collate_raw_inputs(inputs))
-            outputs = self.split_raw_outputs(batch_outputs, batch_size=len(images))
-        else:
-            outputs = [self.predict_raw(single_inputs) for single_inputs in inputs]
-
+        outputs = self.predict_raw_list(inputs)
         return [self.postprocess(single_outputs, meta) for single_outputs, meta in zip(outputs, metas, strict=True)]
+
+    def predict_raw_list(self, inputs: List[RawTensors]) -> List[RawTensors]:
+        """The engine part of 'predict_batch': single-image inputs in, single-image outputs out.
+
+        Runs one batched engine call when the model supports batching, otherwise one call per image.
+        Separate from 'predict_batch' so latency measurements can time the stages on their own.
+        """
+        if self.supports_batching() and len(inputs) > 1:
+            batch_outputs = self.predict_raw_batch(self.collate_raw_inputs(inputs))
+            return self.split_raw_outputs(batch_outputs, batch_size=len(inputs))
+        return [self.predict_raw(single_inputs) for single_inputs in inputs]
 
     def get_model_info(self) -> ModelBundleInfo:
         return self.model_info
