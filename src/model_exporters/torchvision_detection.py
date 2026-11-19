@@ -457,7 +457,7 @@ def _export_full_graph(
 def _onnx_export(module: nn.Module, args: tuple, path_onnx: Path, **kwargs) -> None:
     # The TorchScript-based exporter handles torchvision detection models (data dependent control flow
     # in the transform and NMS). Tracer and user warnings about these constructs are expected; the exported
-    # graphs are verified against torch in tests/test_torchvision_onnxruntime.py.
+    # graphs are verified against torch in tests/model_exporters/test_torchvision_detection.py.
     with warnings.catch_warnings(), torch.no_grad():
         warnings.simplefilter("ignore", category=torch.jit.TracerWarning)
         warnings.simplefilter("ignore", category=DeprecationWarning)

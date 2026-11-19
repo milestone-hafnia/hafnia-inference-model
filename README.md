@@ -59,6 +59,7 @@ uv run python tests/micro_datasets.py --force  # Recreate all of them
 uv sync --all-extras         # Install dependencies incl. torch, onnxruntime, openvino and the dev group
 uv run pytest                # Run all tests (the first run downloads pretrained torchvision weights)
 uv run pytest -m "not slow"  # Skip the end-to-end export tests
+uv run pytest tests/inference_model_openvino  # Tests of one module (one folder per module under src/)
 uv run ruff check src tests scripts examples  # Lint
 uv run ruff format src tests scripts examples # Format
 uv run mypy src tests scripts examples        # Type check

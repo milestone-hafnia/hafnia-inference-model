@@ -56,3 +56,27 @@ def ssd(tmp_path_factory):
 @pytest.fixture(scope="session")
 def frcnn(tmp_path_factory):
     return _export_onnx(tmp_path_factory, FRCNN_NAME)
+
+
+# OpenVINO IR bundles converted from the ONNX bundles above, shared by the OpenVINO tests
+def _convert_to_openvino(tmp_path_factory, path_onnx_bundle, precision):
+    pytest.importorskip("openvino")
+    from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
+
+    path_bundle = tmp_path_factory.mktemp("openvino") / f"{path_onnx_bundle.stem}_openvino_{precision}.zip"
+    return export_onnx_bundle_to_openvino(path_onnx_bundle, path_bundle, precision=precision)
+
+
+@pytest.fixture(scope="session")
+def ssd_ir(ssd, tmp_path_factory):
+    return _convert_to_openvino(tmp_path_factory, ssd[2], "fp32")
+
+
+@pytest.fixture(scope="session")
+def ssd_ir_fp16(ssd, tmp_path_factory):
+    return _convert_to_openvino(tmp_path_factory, ssd[2], "fp16")
+
+
+@pytest.fixture(scope="session")
+def frcnn_ir(frcnn, tmp_path_factory):
+    return _convert_to_openvino(tmp_path_factory, frcnn[2], "fp32")

@@ -500,10 +500,20 @@ package-openvino/
 ├── examples/
 │   ├── example_inference_model.py   # basic flow: export, run on ORT, convert, run on OpenVINO, draw, benchmark
 │   └── example_compare_models.py    # models x engines/formats: mAP + latency table
-└── tests/
+└── tests/                       # one folder per module under src/, shared helpers at the root
+    ├── conftest.py                  # session fixtures: micro dataset, exported ONNX and OpenVINO bundles
+    ├── helpers.py                   # dummy flavor, detection matching
     ├── micro_datasets.py            # creates tests/data/micro-* from the Hafnia platform (8 COCO images)
-    └── data/micro-coco-2017/
+    ├── data/micro-coco-2017/
+    ├── inference_model_core/        # test_bundle, test_detection, test_inference_model, test_model_info, ...
+    ├── inference_model_onnxruntime/ # test_onnxruntime_flavors
+    ├── inference_model_openvino/    # test_export_onnx, test_openvino_flavors (parity with ONNX Runtime)
+    ├── model_exporters/             # test_torchvision_detection (parity with torch)
+    └── package_openvino/            # test_platform
 ```
+
+Test file names are unique across folders: the folders have no `__init__.py` (a `tests/inference_model_core`
+package would shadow the real one), so pytest imports test files by their base name.
 
 Dependency rules (worth enforcing with a test or lint rule):
 
