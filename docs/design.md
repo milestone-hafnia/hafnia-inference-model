@@ -759,12 +759,36 @@ The original plan, for reference:
 5. ✅ **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance. See 8.2.
 6. ✅ **Benchmark script** with latency + accuracy. Compare ORT / OV-FP32 / OV-INT8 on a sample
    dataset. See 8.3 (and `examples/example_compare_models.py` for the comparison).
-7. **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
-   `hafnia runc launch-local ...` for each script, then a real experiment.
+7. 🔶 **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
+   `hafnia runc launch-local ...` for each script, then a real experiment. Local Docker run
+   done (2026-11-19), the platform experiment is not: see "Trainer package in Docker" below.
 8. (Stretch) Port RF-DETR as a second family (OpenVINO and ORT flavors with decoder `rfdetr_detection`). This is the real
    test of genericity, because its post-processing differs a lot from torchvision's.
 
 ---
+
+### Trainer package in Docker (step 7)
+
+Run on 2026-11-19 with the micro dataset mounted as the experiment dataset:
+
+- `hafnia trainer create-zip .`: 817 KiB (scripts, `src/`, Dockerfile, lock file; tests, examples
+  and data excluded by `.hafniaignore`).
+- `hafnia runc build-local trainer.zip`: builds, image 13.8 GB (see the risks below).
+- In the image, with `HAFNIA_CLOUD=true` and the platform folders mounted, all three scripts run
+  in platform mode, each taking the previous output as its checkpoint:
+  `export_torchvision_to_onnx.py` (25 s, downloads the torchvision weights) →
+  `export_onnx_to_openvino.py --precision int8 --calibration-split-name all` (22 s) →
+  `benchmark.py --split-name all` (13 s: mAP 0.317, 86 images/s on the dev laptop CPU).
+- `hafnia runc launch-local` itself could not be used on this machine:
+  - It runs `docker run --runtime nvidia`, and the NVIDIA container runtime is not installed
+    here. The package doesn't need a GPU.
+  - It mounts only the dataset. A script that needs an input bundle (a checkpoint in
+    `/opt/ml/checkpoints`) can't be tested with it, and outputs are lost with the container.
+  - The README shows the equivalent `docker run` with the checkpoint and output folders
+    mounted.
+- Platform needs: internet access for the pretrained torchvision weights
+  (download.pytorch.org), and a way to pass the output bundle of one experiment as the
+  checkpoint of the next.
 
 ## 10. Risks and things to watch
 
@@ -781,7 +805,10 @@ The original plan, for reference:
   `--static-shape` reshape.
 - **Docker image size**: torch + torchvision + openvino + nncf + onnxruntime in one
   image. Acceptable for a trainer package, but serving images must not need torch (another
-  reason for the no-torch rule for flavors).
+  reason for the no-torch rule for flavors). Measured: **13.8 GB**, mostly the CUDA build of
+  torch from PyPI and its NVIDIA libraries, which the package doesn't use (export, conversion
+  and benchmarks run on CPU). The CPU-only torch wheel would cut most of it. Decision
+  (2026-11-19): keep the CUDA build for now, as in the other trainer packages.
 - **Hardware for latency numbers**: latency only means something on the target device.
   What the platform hardware is (vs. Intel CPU/iGPU/NPU targets) matters for how the numbers
   will be read (Q7).

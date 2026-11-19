@@ -54,6 +54,28 @@ uv run python tests/micro_datasets.py          # Create missing micro datasets
 uv run python tests/micro_datasets.py --force  # Recreate all of them
 ```
 
+## Trainer package
+
+```bash
+hafnia trainer create-zip .           # -> trainer.zip (see .hafniaignore)
+hafnia runc build-local trainer.zip   # -> Docker image, its tag in state.json
+```
+
+`hafnia runc launch-local` mounts only the dataset and needs the NVIDIA container runtime. To test a script
+that takes an input bundle, run the image like the platform does, with the checkpoint, model and output
+folders mounted (here the bundle from `.data/runs/1/model` is the checkpoint of run 2):
+
+```bash
+IMAGE=$(python -c "import json; print(json.load(open('state.json'))['image_tag'])")
+mkdir -p .data/runs/2/checkpoints && cp .data/runs/1/model/*.zip .data/runs/2/checkpoints/
+docker run --rm -e HAFNIA_CLOUD=true -e PYTHONPATH=src \
+  -v "$PWD/tests/data/micro-coco-2017:/opt/ml/input/data/training:ro" \
+  -v "$PWD/.data/runs/2/checkpoints:/opt/ml/checkpoints" \
+  -v "$PWD/.data/runs/2/model:/opt/ml/model" \
+  -v "$PWD/.data/runs/2/output:/opt/ml/output/data" \
+  "$IMAGE" python scripts/export_onnx_to_openvino.py --precision int8 --calibration-split-name all
+```
+
 ## Development
 
 ```bash
