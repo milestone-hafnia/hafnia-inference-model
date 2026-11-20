@@ -1,6 +1,7 @@
 import zipfile
 
 import pytest
+from helpers import DUMMY_NETWORK_FILE as MODEL_FILE
 from helpers import make_model_info
 
 from inference_model_core import (
@@ -16,25 +17,25 @@ from inference_model_core import (
 @pytest.mark.parametrize("bundle_name", ["model.zip", "model_dir"])
 def test_write_and_read_bundle(tmp_path, bundle_name):
     model_info = make_model_info()
-    path_bundle = write_bundle(tmp_path / bundle_name, model_info, files={"model.json": b"weights"})
+    path_bundle = write_bundle(tmp_path / bundle_name, model_info, files={MODEL_FILE: b"weights"})
 
     assert read_model_info(path_bundle) == model_info
     assert validate_bundle(path_bundle) == model_info
-    assert read_bundle_file(path_bundle, "model.json") == b"weights"
+    assert read_bundle_file(path_bundle, MODEL_FILE) == b"weights"
     with open_bundle(path_bundle) as path_dir:
-        assert (path_dir / "model.json").read_bytes() == b"weights"
+        assert (path_dir / MODEL_FILE).read_bytes() == b"weights"
         assert (path_dir / MODEL_INFO_FILENAME).is_file()
 
 
 def test_write_bundle_from_local_file(tmp_path):
     path_source = tmp_path / "source.bin"
     path_source.write_bytes(b"from file")
-    path_bundle = write_bundle(tmp_path / "model.zip", make_model_info(), files={"model.json": path_source})
-    assert read_bundle_file(path_bundle, "model.json") == b"from file"
+    path_bundle = write_bundle(tmp_path / "model.zip", make_model_info(), files={MODEL_FILE: path_source})
+    assert read_bundle_file(path_bundle, MODEL_FILE) == b"from file"
 
 
 def test_zip_bundle_is_extracted_to_temporary_dir(tmp_path):
-    path_bundle = write_bundle(tmp_path / "model.zip", make_model_info(), files={"model.json": b"weights"})
+    path_bundle = write_bundle(tmp_path / "model.zip", make_model_info(), files={MODEL_FILE: b"weights"})
     with open_bundle(path_bundle) as path_dir:
         assert path_dir != tmp_path
     assert not path_dir.exists()
@@ -42,7 +43,10 @@ def test_zip_bundle_is_extracted_to_temporary_dir(tmp_path):
 
 @pytest.mark.parametrize(
     ("files", "match"),
-    [({}, r"Missing: \[.model.json.\]"), ({"model.json": b"", "other.bin": b""}, r"not referenced: \[.other.bin.\]")],
+    [
+        ({}, r"Missing: \[.network/model.json.\]"),
+        ({MODEL_FILE: b"", "other.bin": b""}, r"not referenced: \[.other.bin.\]"),
+    ],
 )
 def test_files_must_match_model_info(tmp_path, files, match):
     with pytest.raises(ValueError, match=match):
@@ -51,12 +55,12 @@ def test_files_must_match_model_info(tmp_path, files, match):
 
 def test_overwrite(tmp_path):
     path_bundle = tmp_path / "model.zip"
-    write_bundle(path_bundle, make_model_info(), files={"model.json": b"v1"})
+    write_bundle(path_bundle, make_model_info(), files={MODEL_FILE: b"v1"})
     with pytest.raises(FileExistsError):
-        write_bundle(path_bundle, make_model_info(), files={"model.json": b"v2"})
+        write_bundle(path_bundle, make_model_info(), files={MODEL_FILE: b"v2"})
 
-    write_bundle(path_bundle, make_model_info(), files={"model.json": b"v2"}, overwrite=True)
-    assert read_bundle_file(path_bundle, "model.json") == b"v2"
+    write_bundle(path_bundle, make_model_info(), files={MODEL_FILE: b"v2"}, overwrite=True)
+    assert read_bundle_file(path_bundle, MODEL_FILE) == b"v2"
 
 
 def test_missing_model_file_is_detected(tmp_path):
@@ -64,12 +68,12 @@ def test_missing_model_file_is_detected(tmp_path):
     with zipfile.ZipFile(path_bundle, "w") as archive:
         archive.writestr(MODEL_INFO_FILENAME, make_model_info().model_dump_json())
 
-    with pytest.raises(FileNotFoundError, match=r"missing files referenced in model info: \[.model.json.\]"):
+    with pytest.raises(FileNotFoundError, match=r"missing files referenced in model info: \[.network/model.json.\]"):
         validate_bundle(path_bundle)
 
 
 def test_read_bundle_file_rejects_paths_outside_bundle(tmp_path):
-    path_bundle = write_bundle(tmp_path / "model_dir", make_model_info(), files={"model.json": b""})
+    path_bundle = write_bundle(tmp_path / "model_dir", make_model_info(), files={MODEL_FILE: b""})
     with pytest.raises(ValueError, match="inside the bundle"):
         read_bundle_file(path_bundle, "../secret.txt")
 

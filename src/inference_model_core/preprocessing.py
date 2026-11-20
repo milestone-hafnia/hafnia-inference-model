@@ -1,20 +1,19 @@
-"""Generic, engine-agnostic image preprocessing driven by 'PreprocessingInfo'.
+"""Engine-agnostic image preprocessing functions, used by the image components ('components/image.py').
 
-'preprocess_model_input' is the single implementation of model input preprocessing: it is the default
-'InferenceModelBase.preprocess' and is used by exporters for quantization calibration, so calibration
-always sees the same inputs as inference. NumPy/OpenCV only: nothing here may depend on torch.
+NumPy/OpenCV/PIL only: nothing here may depend on torch.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Literal, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 from hafnia.dataset.benchmark.inference_model import ImageType
 from PIL import Image
 
-from inference_model_core.model_info import PreprocessingInfo, RuntimeInfo, TensorInfo
+ResizeMode = Literal["stretch", "letterbox", "keep_ratio_pad"]
+Interpolation = Literal["linear", "nearest", "cubic", "area"]
 
 _INTERPOLATION_FLAGS = {
     "linear": cv2.INTER_LINEAR,
@@ -33,7 +32,7 @@ _PIL_FILTERS = {
 
 
 @dataclass(frozen=True)
-class PreprocessMeta:
+class ImageTransform:
     """How an original image maps to the model input: 'input = original * scale + pad'."""
 
     original_height: int
@@ -44,6 +43,11 @@ class PreprocessMeta:
     scale_y: float = 1.0
     pad_left: float = 0.0
     pad_top: float = 0.0
+
+    @staticmethod
+    def identity(height: int, width: int) -> "ImageTransform":
+        """For boxes that already are in pixels of the original image."""
+        return ImageTransform(original_height=height, original_width=width, input_height=height, input_width=width)
 
     def input_xyxy_to_normalized(self, boxes_xyxy: np.ndarray) -> np.ndarray:
         """Map (N, 4) pixel boxes in model input space to normalized xyxy boxes on the original image,
@@ -81,142 +85,103 @@ def load_image_rgb(image: ImageType) -> np.ndarray:
     return image[:, :, :3]
 
 
-def preprocess_image(
-    image: ImageType,
-    preprocessing: PreprocessingInfo,
-    input_hw: Optional[Sequence[Optional[int]]] = None,
-    add_batch_dim: bool = True,
-) -> Tuple[np.ndarray, PreprocessMeta]:
-    """Apply the preprocessing steps outside the graph to one image.
+def resize_image(
+    pixels: np.ndarray,
+    mode: ResizeMode,
+    height: int,
+    width: int,
+    interpolation: Interpolation = "linear",
+    antialias: bool = False,
+    pad_value: float = 0.0,
+) -> Tuple[np.ndarray, ImageTransform]:
+    """Resize an (H, W, 3) uint8 image to (height, width).
 
     Args:
-        image: Input image (see 'load_image_rgb').
-        preprocessing: Preprocessing description from the model info.
-        input_hw: Spatial size of the model input, used when 'preprocessing.resize' has no explicit size.
-        add_batch_dim: Prepend a batch axis of size 1.
+        pixels: Image to resize.
+        mode: 'stretch' ignores the aspect ratio. 'letterbox' keeps it and pads equally on both sides.
+            'keep_ratio_pad' keeps it and pads only bottom/right.
+        height: Target height.
+        width: Target width.
+        interpolation: Interpolation method.
+        antialias: Low-pass filter when downscaling, as torchvision's 'Resize' does by default on tensors (and
+            PIL). Models trained with torchvision transforms need it to see the same pixels at inference.
+        pad_value: Pixel value (0-255) used for padding.
 
     Returns:
-        The model input tensor and the metadata to map outputs back to the original image.
+        The resized image and how it maps to the original image.
     """
-    image_rgb = load_image_rgb(image)
-    original_height, original_width = image_rgb.shape[:2]
-
-    pixels = image_rgb
-    if preprocessing.color_order == "BGR" and preprocessing.is_applied_outside_graph("color_order"):
-        pixels = pixels[:, :, ::-1]
-
-    meta = PreprocessMeta(
-        original_height=original_height,
-        original_width=original_width,
-        input_height=original_height,
-        input_width=original_width,
-    )
-    resize = preprocessing.resize
-    if resize is not None and resize.mode != "none" and preprocessing.is_applied_outside_graph("resize"):
-        pixels, meta = _resize(pixels, preprocessing, input_hw)
-
-    tensor = pixels.astype(np.float32)
-    if preprocessing.scale is not None and preprocessing.is_applied_outside_graph("scale"):
-        tensor *= preprocessing.scale
-
-    if preprocessing.mean is not None and preprocessing.is_applied_outside_graph("normalize"):
-        mean = np.asarray(preprocessing.mean, dtype=np.float32)
-        std = np.asarray(preprocessing.std, dtype=np.float32)
-        if mean.shape[0] != tensor.shape[2]:
-            raise ValueError(f"'mean'/'std' have {mean.shape[0]} values, but the image has {tensor.shape[2]} channels.")
-        tensor = (tensor - mean) / std
-
-    if preprocessing.layout == "NCHW" and preprocessing.is_applied_outside_graph("layout"):
-        tensor = tensor.transpose(2, 0, 1)
-
-    tensor = np.ascontiguousarray(tensor.astype(preprocessing.dtype))
-    if add_batch_dim:
-        tensor = tensor[None]
-    return tensor, meta
-
-
-def _resize(
-    pixels: np.ndarray,
-    preprocessing: PreprocessingInfo,
-    input_hw: Optional[Sequence[Optional[int]]],
-) -> Tuple[np.ndarray, PreprocessMeta]:
-    resize = preprocessing.resize
-    assert resize is not None
-    input_height, input_width = input_hw if input_hw is not None else (None, None)
-    target_height = resize.height or input_height
-    target_width = resize.width or input_width
-    if target_height is None or target_width is None:
-        raise ValueError(
-            "Resize target size is unknown. Set 'resize.height'/'resize.width' or use a model input with a static "
-            "spatial size."
-        )
-
     original_height, original_width = pixels.shape[:2]
 
-    def resize_to(width: int, height: int) -> np.ndarray:
-        if resize.antialias:
-            return np.asarray(Image.fromarray(pixels).resize((width, height), _PIL_FILTERS[resize.interpolation]))
-        return cv2.resize(pixels, (width, height), interpolation=_INTERPOLATION_FLAGS[resize.interpolation])
+    def resize_to(new_width: int, new_height: int) -> np.ndarray:
+        if antialias:
+            return np.asarray(Image.fromarray(pixels).resize((new_width, new_height), _PIL_FILTERS[interpolation]))
+        return cv2.resize(pixels, (new_width, new_height), interpolation=_INTERPOLATION_FLAGS[interpolation])
 
-    if resize.mode == "stretch":
-        resized = resize_to(target_width, target_height)
-        meta = PreprocessMeta(
+    if mode == "stretch":
+        transform = ImageTransform(
             original_height=original_height,
             original_width=original_width,
-            input_height=target_height,
-            input_width=target_width,
-            scale_x=target_width / original_width,
-            scale_y=target_height / original_height,
+            input_height=height,
+            input_width=width,
+            scale_x=width / original_width,
+            scale_y=height / original_height,
         )
-        return resized, meta
+        return resize_to(width, height), transform
 
     # 'letterbox' and 'keep_ratio_pad' keep the aspect ratio and pad the remaining area
-    scale = min(target_height / original_height, target_width / original_width)
+    scale = min(height / original_height, width / original_width)
     new_height = max(1, round(original_height * scale))
     new_width = max(1, round(original_width * scale))
     resized = resize_to(new_width, new_height)
 
-    if resize.mode == "letterbox":
-        pad_top = (target_height - new_height) // 2
-        pad_left = (target_width - new_width) // 2
+    if mode == "letterbox":
+        pad_top = (height - new_height) // 2
+        pad_left = (width - new_width) // 2
     else:
         pad_top, pad_left = 0, 0
 
-    canvas = np.full((target_height, target_width, 3), round(resize.pad_value), dtype=np.uint8)
+    canvas = np.full((height, width, 3), round(pad_value), dtype=np.uint8)
     canvas[pad_top : pad_top + new_height, pad_left : pad_left + new_width] = resized
-    meta = PreprocessMeta(
+    transform = ImageTransform(
         original_height=original_height,
         original_width=original_width,
-        input_height=target_height,
-        input_width=target_width,
+        input_height=height,
+        input_width=width,
         scale_x=new_width / original_width,
         scale_y=new_height / original_height,
         pad_left=pad_left,
         pad_top=pad_top,
     )
-    return canvas, meta
+    return canvas, transform
 
 
-def input_spatial_size(tensor: TensorInfo, preprocessing: PreprocessingInfo) -> Tuple[Optional[int], Optional[int]]:
-    """(height, width) of an image input tensor of rank 3 (no batch axis) or rank 4. 'None' if dynamic."""
-    if len(tensor.shape) not in (3, 4):
-        raise ValueError(f"Image input '{tensor.name}' must have rank 3 or 4, got shape {tensor.shape}.")
-    channels_first = preprocessing.layout == "NCHW" and preprocessing.is_applied_outside_graph("layout")
-    spatial = tensor.shape[-2:] if channels_first else tensor.shape[-3:-1]
-    return spatial[0], spatial[1]
+def image_to_tensor(
+    pixels: np.ndarray,
+    color_order: Literal["RGB", "BGR"] = "RGB",
+    scale: Optional[float] = 1 / 255,
+    mean: Optional[Sequence[float]] = None,
+    std: Optional[Sequence[float]] = None,
+    layout: Literal["CHW", "HWC"] = "CHW",
+    dtype: str = "float32",
+) -> np.ndarray:
+    """Turn an (H, W, 3) uint8 RGB image into a network input tensor without a batch axis.
 
-
-def preprocess_model_input(image: ImageType, runtime: RuntimeInfo) -> Tuple[Dict[str, np.ndarray], PreprocessMeta]:
-    """Turn one image into the inputs of a single-image model call, as described by the model info.
-
-    The image goes to the first input tensor. A rank 4 input gets a batch axis of size 1, a rank 3 input
-    (e.g. torchvision detection models exported with their transform) gets none.
+    Steps, in this order: color order, pixel multiplier 'scale', per-channel '(x - mean) / std', layout, dtype.
     """
-    tensor_info = runtime.input.tensors[0]
-    tensor, meta = preprocess_image(
-        image,
-        runtime.preprocessing,
-        input_hw=input_spatial_size(tensor_info, runtime.preprocessing),
-        add_batch_dim=len(tensor_info.shape) == 4,
-    )
-    return {tensor_info.name: tensor}, meta
+    if color_order == "BGR":
+        pixels = pixels[:, :, ::-1]
+
+    tensor = pixels.astype(np.float32)
+    if scale is not None:
+        tensor *= scale
+    if mean is not None and std is not None:
+        mean_array = np.asarray(mean, dtype=np.float32)
+        if mean_array.shape[0] != tensor.shape[2]:
+            raise ValueError(
+                f"'mean'/'std' have {mean_array.shape[0]} values, but the image has {tensor.shape[2]} channels."
+            )
+        std_array = np.asarray(std, dtype=np.float32)
+        tensor = (tensor - mean_array) / std_array
+    if layout == "CHW":
+        tensor = tensor.transpose(2, 0, 1)
+    return np.ascontiguousarray(tensor.astype(dtype))

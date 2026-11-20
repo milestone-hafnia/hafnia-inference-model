@@ -1,1 +1,2 @@
-"""OpenVINO engine flavors and ONNX -> OpenVINO conversion. Later moves to its own repo ('inference-model-openvino')."""
+"""OpenVINO engine: network components for ONNX and OpenVINO IR files, and conversion to OpenVINO IR. Later moves
+to its own repo ('inference-model-openvino')."""

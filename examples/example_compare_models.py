@@ -1,13 +1,13 @@
 """Benchmark several models on several engines and formats with the same code.
 
-For each pretrained detection model, the example exports an ONNX bundle and converts it to OpenVINO IR in FP32,
-FP16 and INT8 (NNCF post-training quantization). Every bundle is then loaded with 'inference_model_from_path' and
-run through Hafnia's benchmark (accuracy) and a simple latency measurement:
+For each pretrained detection model, the example writes a model bundle with a torch network and converts it to
+ONNX and to OpenVINO IR in FP32, FP16 and INT8 (NNCF post-training quantization). Every bundle is then loaded
+with 'inference_model_from_path' and run through Hafnia's benchmark (accuracy) and a simple latency measurement:
 
-    model                 bundle             engine
-    SSDLite320            ONNX               ONNX Runtime
-    Faster R-CNN 320      ONNX               OpenVINO (engine override)
-    RF-DETR Nano
+    model                 network            engine
+    SSDLite320            torch              PyTorch
+    Faster R-CNN 320      ONNX               ONNX Runtime
+    RF-DETR Nano          ONNX               OpenVINO (engine override)
                           OpenVINO IR FP32   OpenVINO
                           OpenVINO IR FP16   OpenVINO
                           OpenVINO IR INT8   OpenVINO
@@ -15,8 +15,9 @@ run through Hafnia's benchmark (accuracy) and a simple latency measurement:
 INT8 is calibrated on the same 8 images it is evaluated on, which flatters it: use a larger, separate dataset
 for real numbers (at least 300 calibration images are recommended).
 
-The loop body never depends on the model or the engine: the model info in each bundle selects the
-implementation. See 'example_inference_model.py' for the basic flow of a single model.
+The loop body never depends on the model or the engine: the model info in each bundle describes the model as a
+graph of components, and a conversion only replaces the network component. See 'example_inference_model.py'
+for the basic flow of a single model.
 
 Run from the repo root (needs all extras: 'uv sync --all-extras'):
 
@@ -36,10 +37,8 @@ from hafnia.utils import progress_bar
 from rich import print as rprint
 from rich.table import Table
 
-from inference_model_core import inference_model_from_path
-from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
-from inference_model_openvino.quantize import quantize_bundle
-from model_exporters.registry import export_pretrained
+from inference_model_core import convert_bundle, inference_model_from_path
+from model_exporters.registry import create_pretrained_bundle
 from package_openvino.metrics import run_benchmark
 
 MODELS = {
@@ -47,7 +46,7 @@ MODELS = {
     "Faster R-CNN 320": "fasterrcnn_mobilenet_v3_large_320_fpn",
     "RF-DETR Nano": "RFDETRNano",
 }
-SERVING_PARAMS = {"score_threshold": 0.3}  # Decoder settings for latency and visualization
+SERVING_PARAMS = {"score_threshold": 0.3}  # Component parameters for latency and visualization
 PATH_DATASET = Path(__file__).parents[1] / "tests" / "data" / "micro-coco-2017"
 PATH_OUTPUT = Path(".data") / "examples" / "compare_models"
 PATH_OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -57,16 +56,20 @@ BundleRun = Tuple[Path, Optional[str]]
 
 
 def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dict[str, BundleRun]:
-    """Export a pretrained model to ONNX, convert and quantize it to OpenVINO IR, and list the ways to run them."""
+    """Write a pretrained model as a bundle, convert and quantize it, and list the ways to run the bundles."""
+    path_torch = PATH_OUTPUT / f"{model_name}_torch.zip"
     path_onnx = PATH_OUTPUT / f"{model_name}_onnx.zip"
     path_fp32 = PATH_OUTPUT / f"{model_name}_openvino_fp32.zip"
     path_fp16 = PATH_OUTPUT / f"{model_name}_openvino_fp16.zip"
     path_int8 = PATH_OUTPUT / f"{model_name}_openvino_int8.zip"
-    export_pretrained(model_name, path_onnx, overwrite=True)
-    export_onnx_bundle_to_openvino(path_onnx, path_fp32, precision="fp32", overwrite=True)
-    export_onnx_bundle_to_openvino(path_onnx, path_fp16, precision="fp16", overwrite=True)
-    quantize_bundle(path_onnx, path_int8, calibration_images, overwrite=True)
+    create_pretrained_bundle(model_name, path_torch, overwrite=True)
+    convert_bundle(path_torch, path_onnx, target="onnx", overwrite=True)
+    convert_bundle(path_onnx, path_fp32, target="openvino", overwrite=True)
+    convert_bundle(path_onnx, path_fp16, target="openvino", options={"precision": "fp16"}, overwrite=True)
+    calibration_inputs = [{"image": image} for image in calibration_images]
+    convert_bundle(path_onnx, path_int8, target="openvino_int8", calibration_inputs=calibration_inputs, overwrite=True)
     return {
+        "torch / PyTorch": (path_torch, None),
         "ONNX / ONNX Runtime": (path_onnx, None),
         "ONNX / OpenVINO": (path_onnx, "openvino"),
         "IR FP32 / OpenVINO": (path_fp32, None),
@@ -76,8 +79,8 @@ def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dic
 
 
 def median_latency_ms(path_bundle: Path, engine: Optional[str], images: List[np.ndarray], repeats: int = 5) -> float:
-    """End-to-end latency of 'predict' (preprocess + model + postprocess) for one image, on CPU."""
-    model = inference_model_from_path(path_bundle, inference_engine=engine, postprocessing_params=SERVING_PARAMS)
+    """End-to-end latency of 'predict' (all components of the graph) for one image, on CPU."""
+    model = inference_model_from_path(path_bundle, inference_engine=engine, params=SERVING_PARAMS)
     model.predict(images[0])  # Warm-up
     latencies = []
     for image in images * repeats:
@@ -96,7 +99,7 @@ table = Table(
     title=f"Detection models on {len(dataset)} COCO images",
     caption=f"ms: median latency per image, CPU, score threshold {SERVING_PARAMS['score_threshold']}",
 )
-for column in ("Model", "Bundle / engine", "mAP", "mAP@50", "ms"):
+for column in ("Model", "Network / engine", "mAP", "mAP@50", "ms"):
     table.add_column(column)
 
 n_model_families = len(MODELS)

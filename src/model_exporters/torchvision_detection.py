@@ -1,30 +1,34 @@
-"""Export torchvision detection models to ONNX model bundles.
+"""Model bundles of torchvision detection models.
 
-Two export contracts (see docs/design.md and docs/design_review.md):
+The bundle is a graph of components with a torch network, which converts to ONNX and from there to OpenVINO (see
+'inference_model_core.convert'). Two kinds of networks (see docs/design.md):
 
-- SSD models (e.g. 'ssdlite320_mobilenet_v3_large') are exported as the **network only**: input
-  '[N, 3, H, W]' with a dynamic batch axis, output per-anchor decoded boxes and class scores. Resizing and
-  normalization are done outside the graph, thresholding/top-k/NMS by the flavor (decoder
-  'anchor_boxes_nms'). The score threshold is then a runtime setting and the graph batches and quantizes.
-- Faster R-CNN models are two-stage with NMS inside the network and an aspect-ratio preserving resize, so
-  they are exported as the **full model**: input '[3, H, W]', output final boxes/scores/labels (decoder
-  'boxes_scores_labels'). The graph is exported with a very low score threshold so the runtime threshold
-  can only be raised.
+- SSD models (e.g. 'ssdlite320_mobilenet_v3_large') are the **network only** ('torchvision_ssd_network'): input
+  '[N, 3, H, W]', output per-anchor decoded boxes and class scores. Resizing and normalization run before the
+  network, thresholding/top-k/NMS after it ('anchor_nms'). The score threshold is then a runtime setting and the
+  network batches and quantizes:
 
-This is the only module importing torch/torchvision.
+      load_image -> resize -> to_tensor -> network -> nms -> to_bboxes
+
+- Faster R-CNN models are two-stage with NMS inside the network and an aspect-ratio preserving resize, so they
+  are the **full model** ('torchvision_faster_rcnn'): input '[3, H, W]', output final boxes/scores/labels in
+  pixels of the image. The network runs with a very low score threshold so the runtime threshold can only be
+  raised:
+
+      load_image -> to_tensor -> network -> to_bboxes
 """
 
 import contextlib
 import copy
 import tempfile
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
-import onnx
 import torch
 import torch.nn.functional as F
 import torchvision
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
+from pydantic import BaseModel, ConfigDict, Field
 from torch import nn
 from torchvision.models import WeightsEnum, detection
 from torchvision.models.detection import transform as detection_transform
@@ -34,43 +38,44 @@ from torchvision.models.detection.image_list import ImageList
 from torchvision.models.detection.ssd import SSD
 from torchvision.ops import boxes as box_ops
 from torchvision.ops import nms
+from torchvision.ops.misc import FrozenBatchNorm2d
 
 from inference_model_core import (
-    InputInfo,
+    ComponentInfo,
+    ConversionInfo,
+    GraphInfo,
     ModelBundleInfo,
-    PostprocessingInfo,
-    PreprocessingInfo,
-    QuantizationHints,
-    ResizeInfo,
-    RuntimeInfo,
+    NetworkParams,
     TensorInfo,
+    register_component,
     write_bundle,
 )
+from inference_model_core.components import AnchorNMS, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
+from inference_model_torch.component import OnnxExport, TorchNetworkComponent, load_state_dict_file
+from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
 from model_exporters.class_names import detection_task, placeholder_class_name
-from model_exporters.onnx_export import DEFAULT_OPSET_VERSION, onnx_export
 
 FRAMEWORK = "torchvision"
-DECODER_ANCHOR_BOXES_NMS = "anchor_boxes_nms"
-DECODER_BOXES_SCORES_LABELS = "boxes_scores_labels"
-MODEL_FILENAME = "model.onnx"
+WEIGHTS_FILE = "network/weights.pth"
 TASK_NAME = "object_detection"
-# Score threshold baked into full-graph exports. The runtime 'score_threshold' filters on top of it.
-FULL_GRAPH_MIN_SCORE = 0.001
+# Score threshold of full-model networks. The runtime 'score_threshold' filters on top of it.
+FULL_MODEL_MIN_SCORE = 0.001
 # Placeholder categories in torchvision's COCO label space, renamed to unique placeholder class names
 PLACEHOLDER_CATEGORIES = ("__background__", "N/A")
 
-# Graph parts to keep in floating point when quantizing, as ONNX node name patterns (see 'QuantizationHints').
-# Only the network (convolutions and linear layers) is quantized. Box decoding, softmax, resizing and NMS stay in
-# float: 8 bit pixel coordinates and scores cost accuracy, and NNCF quantizing the SSD decoding also made the
-# scores so noisy that NMS got 30x slower.
-SSD_QUANTIZATION_HINTS = QuantizationHints(ignored_node_patterns=[r"/(?!backbone/|head/).*"])
-FASTER_RCNN_QUANTIZATION_HINTS = QuantizationHints(
-    ignored_node_patterns=[
+# Graph parts to keep in floating point when quantizing, as ONNX node name patterns (option
+# 'ignored_node_patterns' of the 'openvino_int8' conversion). Only the network (convolutions and linear layers)
+# is quantized. Box decoding, softmax, resizing and NMS stay in float: 8 bit pixel coordinates and scores cost
+# accuracy, and NNCF quantizing the SSD decoding also made the scores so noisy that NMS got 30x slower.
+SSD_INT8_OPTIONS = {"ignored_node_patterns": [r"/(?!backbone/|head/).*"]}
+FASTER_RCNN_INT8_OPTIONS = {
+    "ignored_node_patterns": [
         r"/model/transform/.*",
         r"/model/rpn/(?!head/).*",
         r"/model/roi_heads/(?!box_head/|box_predictor/).*",
     ]
-)
+}
 
 PretrainedModel = Tuple[Callable[..., nn.Module], WeightsEnum]
 PRETRAINED_MODELS: Dict[str, PretrainedModel] = {
@@ -94,70 +99,173 @@ def load_pretrained_model(model_name: str) -> Tuple[nn.Module, List[str]]:
     return builder(weights=weights).eval(), list(weights.meta["categories"])
 
 
-def export_pretrained_torchvision_detection(
-    model_name: str,
-    path_bundle: Union[str, Path],
-    opset_version: int = DEFAULT_OPSET_VERSION,
-    overwrite: bool = False,
+def create_pretrained_torchvision_detection_bundle(
+    model_name: str, path_bundle: Union[str, Path], overwrite: bool = False
 ) -> Path:
     model, categories = load_pretrained_model(model_name)
-    return export_torchvision_detection(
+    return create_torchvision_detection_bundle(
         model,
+        architecture=model_name,
         categories=categories,
         path_bundle=path_bundle,
         name=model_name,
         variant=model_name,
-        opset_version=opset_version,
         overwrite=overwrite,
         provenance={"weights": str(PRETRAINED_MODELS[model_name][1])},
     )
 
 
-def export_torchvision_detection(
+def create_torchvision_detection_bundle(
     model: nn.Module,
+    architecture: str,
     categories: List[str],
     path_bundle: Union[str, Path],
     name: str,
     variant: Optional[str] = None,
-    opset_version: int = DEFAULT_OPSET_VERSION,
     overwrite: bool = False,
     provenance: Optional[dict] = None,
 ) -> Path:
-    """Export a torchvision detection model (pretrained or fine-tuned) as an ONNX model bundle.
+    """Write a torchvision detection model (pretrained or fine-tuned) as a model bundle with a torch network.
 
     Args:
         model: An 'SSD' or 'FasterRCNN' model. It is not modified.
-        categories: Category name per model label. '__background__' and 'N/A' entries are not task classes.
+        architecture: torchvision architecture of 'model' (see 'PRETRAINED_MODELS'). The bundle stores the
+            weights and rebuilds the module from this name.
+        categories: Category name per model label. '__background__' and 'N/A' entries get placeholder names.
         path_bundle: Output bundle, a '.zip' path or a directory.
         name: Model name stored in the model info.
         variant: Informational variant stored in the model info.
-        opset_version: ONNX opset.
         overwrite: Replace an existing bundle.
-        provenance: Extra provenance information stored in the model info.
+        provenance: Extra provenance information stored with the network component.
     """
+    if architecture not in PRETRAINED_MODELS:
+        raise ValueError(f"Unsupported architecture '{architecture}'. Options: {list(PRETRAINED_MODELS)}")
     task = task_from_categories(categories)
-    n_labels = len(categories)
     provenance = {
-        "exporter": __name__,
+        "created_by": __name__,
         "torch": torch.__version__,
         "torchvision": torchvision.__version__,
-        "opset_version": opset_version,
         **(provenance or {}),
     }
+    if isinstance(model, SSD):
+        components = _ssd_components(model, architecture, n_labels=len(categories), provenance=provenance)
+    elif isinstance(model, FasterRCNN):
+        components = _faster_rcnn_components(model, architecture, n_labels=len(categories), provenance=provenance)
+    else:
+        raise ValueError(f"Unsupported model type '{type(model).__name__}'. Supported: SSD, FasterRCNN.")
 
-    with tempfile.TemporaryDirectory(prefix="torchvision_export_") as tmp_dir:
-        path_onnx = Path(tmp_dir) / MODEL_FILENAME
-        if isinstance(model, SSD):
-            runtime = _export_ssd(model, path_onnx, n_labels, opset_version)
-        elif isinstance(model, FasterRCNN):
-            runtime = _export_full_graph(model, path_onnx, opset_version)
-        else:
-            raise ValueError(f"Unsupported model type '{type(model).__name__}'. Supported: SSD, FasterRCNN.")
-        onnx.checker.check_model(path_onnx.as_posix())
+    model_info = ModelBundleInfo(
+        name=name,
+        framework=FRAMEWORK,
+        variant=variant,
+        tasks=[task],
+        graph=GraphInfo(inputs=["image"], outputs=["predictions"], components=components),
+    )
+    with tempfile.TemporaryDirectory(prefix="torchvision_bundle_") as tmp_dir:
+        path_weights = Path(tmp_dir) / "weights.pth"
+        torch.save(model.state_dict(), path_weights)
+        return write_bundle(path_bundle, model_info, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
 
-        runtime.provenance = {**provenance, **(runtime.provenance or {})}
-        model_info = ModelBundleInfo(name=name, framework=FRAMEWORK, variant=variant, tasks=[task], runtime=runtime)
-        return write_bundle(path_bundle, model_info, files={MODEL_FILENAME: path_onnx}, overwrite=overwrite)
+
+def _network_conversions(onnx_options: Dict[str, Any], int8_options: Dict[str, Any]) -> Dict[str, ConversionInfo]:
+    return {
+        TARGET_ONNX: ConversionInfo(options=onnx_options),
+        TARGET_OPENVINO: ConversionInfo(),
+        TARGET_OPENVINO_INT8: ConversionInfo(options=int8_options),
+    }
+
+
+def _ssd_components(ssd: SSD, architecture: str, n_labels: int, provenance: dict) -> List[ComponentInfo]:
+    transform = ssd.transform
+    if transform.fixed_size is None:
+        raise ValueError("Only SSD models with a fixed input size ('transform.fixed_size') are supported.")
+    width, height = transform.fixed_size  # torchvision stores (width, height)
+    return [
+        LoadImage.create_info("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        # Same as torchvision's GeneralizedRCNNTransform: bilinear resize (no antialiasing) to the fixed size,
+        # then normalization (the order doesn't matter as both are linear)
+        ResizeImage.create_info(
+            "resize",
+            inputs={"image": "image_rgb"},
+            outputs={"image": "image_resized", "transform": "image_transform"},
+            params={"mode": "stretch", "height": height, "width": width, "interpolation": "linear"},
+        ),
+        ImageToTensor.create_info(
+            "to_tensor",
+            inputs={"image": "image_resized"},
+            outputs={"tensor": "input_tensor"},
+            params={"scale": 1 / 255, "mean": list(transform.image_mean), "std": list(transform.image_std)},
+        ),
+        TorchvisionSSDNetwork.create_info(
+            "network",
+            inputs={"images": "input_tensor"},
+            outputs={"boxes": "anchor_boxes", "scores": "anchor_scores"},
+            params={"architecture": architecture, "num_classes": n_labels},
+            files=[WEIGHTS_FILE],
+            batched=True,
+            conversions=_network_conversions(
+                {"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True}, SSD_INT8_OPTIONS
+            ),
+            provenance=provenance,
+        ),
+        AnchorNMS.create_info(
+            "nms",
+            inputs={"boxes": "anchor_boxes", "scores": "anchor_scores"},
+            outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
+            params={
+                "score_threshold": ssd.score_thresh,
+                "nms_iou_threshold": ssd.nms_thresh,
+                "topk_candidates": ssd.topk_candidates,
+                "max_detections": ssd.detections_per_img,
+                "background_index": 0,
+            },
+        ),
+        DetectionsToBboxes.create_info(
+            "to_bboxes",
+            inputs={"boxes": "boxes", "scores": "scores", "labels": "labels", "transform": "image_transform"},
+            outputs={"predictions": "predictions"},
+            params={"task_name": TASK_NAME},
+        ),
+    ]
+
+
+def _faster_rcnn_components(
+    model: FasterRCNN, architecture: str, n_labels: int, provenance: dict
+) -> List[ComponentInfo]:
+    roi_heads = model.roi_heads
+    return [
+        LoadImage.create_info("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        # Resize (aspect ratio preserving) and normalization are part of the network
+        ImageToTensor.create_info(
+            "to_tensor",
+            inputs={"image": "image_rgb"},
+            outputs={"tensor": "input_tensor"},
+            params={"scale": 1 / 255},
+        ),
+        TorchvisionFasterRCNN.create_info(
+            "network",
+            inputs={"image": "input_tensor"},
+            outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
+            params={
+                "architecture": architecture,
+                "num_classes": n_labels,
+                "min_score": min(FULL_MODEL_MIN_SCORE, roi_heads.score_thresh),
+                "nms_iou_threshold": roi_heads.nms_thresh,
+                "max_detections": roi_heads.detections_per_img,
+            },
+            files=[WEIGHTS_FILE],
+            batched=False,
+            conversions=_network_conversions({"opset_version": DEFAULT_OPSET_VERSION}, FASTER_RCNN_INT8_OPTIONS),
+            provenance=provenance,
+        ),
+        # Boxes come out in pixels of the image, so they are mapped with the image size
+        DetectionsToBboxes.create_info(
+            "to_bboxes",
+            inputs={"boxes": "boxes", "scores": "scores", "labels": "labels", "image": "image_rgb"},
+            outputs={"predictions": "predictions"},
+            params={"task_name": TASK_NAME, "score_threshold": roi_heads.score_thresh},
+        ),
+    ]
 
 
 def task_from_categories(categories: List[str]) -> TaskInfo:
@@ -223,58 +331,80 @@ class _SSDNetwork(nn.Module):
         return torch.stack([x0, y0, x1, y1], dim=-1)
 
 
-def _export_ssd(ssd: SSD, path_onnx: Path, n_labels: int, opset_version: int) -> RuntimeInfo:
-    transform = ssd.transform
-    if transform.fixed_size is None:
-        raise ValueError("Only SSD models with a fixed input size ('transform.fixed_size') are supported.")
-    width, height = transform.fixed_size  # torchvision stores (width, height)
-    network = _SSDNetwork(copy.deepcopy(ssd).eval(), height=height, width=width).eval()
-    n_anchors = network.anchors.shape[0]
+class TorchvisionNetworkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    architecture: str = Field(description=f"torchvision architecture. Options: {list(PRETRAINED_MODELS)}")
+    num_classes: int = Field(gt=0, description="Number of model labels, including the background label")
 
-    dummy = torch.zeros(2, 3, height, width)
-    onnx_export(
-        network,
-        (dummy,),
-        path_onnx,
-        input_names=["images"],
-        output_names=["boxes", "scores"],
-        dynamic_axes={"images": {0: "batch"}, "boxes": {0: "batch"}, "scores": {0: "batch"}},
-        opset_version=opset_version,
-    )
 
-    return RuntimeInfo(
-        model_format="onnx",
-        inference_engine="onnxruntime",
-        file_path=MODEL_FILENAME,
-        precision="fp32",
-        input=InputInfo(tensors=[TensorInfo(name="images", shape=[None, 3, height, width])]),
-        outputs=[
-            TensorInfo(name="boxes", shape=[None, n_anchors, 4]),
-            TensorInfo(name="scores", shape=[None, n_anchors, n_labels]),
-        ],
-        # Same as torchvision's GeneralizedRCNNTransform: bilinear resize (no antialiasing) to the fixed
-        # size, then normalization (the order doesn't matter as both are linear)
-        preprocessing=PreprocessingInfo(
-            color_order="RGB",
-            resize=ResizeInfo(mode="stretch", height=height, width=width, interpolation="linear"),
-            scale=1 / 255,
-            mean=list(transform.image_mean),
-            std=list(transform.image_std),
-            layout="NCHW",
-            dtype="float32",
-        ),
-        quantization_hints=SSD_QUANTIZATION_HINTS,
-        postprocessing=PostprocessingInfo(
-            decoder=DECODER_ANCHOR_BOXES_NMS,
-            params={
-                "score_threshold": ssd.score_thresh,
-                "nms_iou_threshold": ssd.nms_thresh,
-                "topk_candidates": ssd.topk_candidates,
-                "max_detections": ssd.detections_per_img,
-                "background_index": 0,
-            },
-        ),
-    )
+def _build_detector(architecture: str, num_classes: int, path_weights: Path) -> nn.Module:
+    """Rebuild a torchvision detector and load its weights. No pretrained weights are downloaded."""
+    if architecture not in PRETRAINED_MODELS:
+        raise ValueError(f"Unsupported architecture '{architecture}'. Options: {list(PRETRAINED_MODELS)}")
+    builder, _ = PRETRAINED_MODELS[architecture]
+    model = builder(weights=None, weights_backbone=None, num_classes=num_classes)
+    state_dict = load_state_dict_file(path_weights)
+    # torchvision builds detectors with frozen batch norm when they start from pretrained weights, and with
+    # regular batch norm otherwise. Frozen batch norm has no 'num_batches_tracked': rebuild what was saved.
+    if not any(key.endswith("num_batches_tracked") for key in state_dict):
+        _freeze_batch_norm(model)
+    model.load_state_dict(state_dict, strict=True)
+    return model.eval()
+
+
+def _freeze_batch_norm(module: nn.Module) -> None:
+    for name, child in module.named_children():
+        if isinstance(child, nn.BatchNorm2d):
+            setattr(module, name, FrozenBatchNorm2d(child.num_features, eps=child.eps))
+        else:
+            _freeze_batch_norm(child)
+
+
+@register_component
+class TorchvisionSSDNetwork(TorchNetworkComponent):
+    """SSD backbone and head with box decoding: 'images' (N, 3, H, W) -> 'boxes' (N, A, 4) decoded xyxy boxes in
+    input pixels and 'scores' (N, A, labels) per anchor."""
+
+    type = "torchvision_ssd_network"
+    params_model = TorchvisionNetworkParams
+    params: TorchvisionNetworkParams
+    input_ports = ("images",)
+    output_ports = ("boxes", "scores")
+
+    @classmethod
+    def build_model(cls, params: TorchvisionNetworkParams, path_weights: Path, device: torch.device) -> nn.Module:  # type: ignore[override]
+        ssd = _build_detector(params.architecture, params.num_classes, path_weights)
+        if not isinstance(ssd, SSD) or ssd.transform.fixed_size is None:
+            raise ValueError(f"'{params.architecture}' is not an SSD model with a fixed input size.")
+        width, height = ssd.transform.fixed_size  # torchvision stores (width, height)
+        return _SSDNetwork(ssd, height=height, width=width).to(device).eval()
+
+    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        boxes, scores = self.model(inputs["images"])
+        return {"boxes": boxes, "scores": scores}
+
+    def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
+        options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
+        network = copy.deepcopy(self.model).cpu()
+        height, width, dynamic_batch = network.height, network.width, options["dynamic_batch"]
+        onnx_export(
+            network,
+            (torch.zeros(2 if dynamic_batch else 1, 3, height, width),),
+            path_onnx,
+            input_names=["images"],
+            output_names=["boxes", "scores"],
+            dynamic_axes=batch_axes(["images", "boxes", "scores"], dynamic_batch),
+            opset_version=options["opset_version"],
+        )
+        batch, n_anchors = None if dynamic_batch else 1, network.anchors.shape[0]
+        params = NetworkParams(
+            input_tensors=[TensorInfo(name="images", shape=[batch, 3, height, width])],
+            output_tensors=[
+                TensorInfo(name="boxes", shape=[batch, n_anchors, 4]),
+                TensorInfo(name="scores", shape=[batch, n_anchors, self.params.num_classes]),
+            ],
+        )
+        return OnnxExport(params=params, batched=True)
 
 
 class _FullGraphDetector(nn.Module):
@@ -406,62 +536,67 @@ def _export_safe_ops() -> Iterator[None]:
             setattr(module, name, original)
 
 
-def _export_full_graph(model: FasterRCNN, path_onnx: Path, opset_version: int) -> RuntimeInfo:
-    runtime_score_threshold = model.roi_heads.score_thresh
-    export_model = copy.deepcopy(model).eval()
-    export_model.roi_heads.score_thresh = min(FULL_GRAPH_MIN_SCORE, runtime_score_threshold)
-    # torchvision handles images without proposals (e.g. blank frames, common in video) with Python branches
-    # and reshapes that don't survive tracing, and computes the resize in float32 when traced. Replace those
-    # parts for the export (see the helpers above).
-    export_model.roi_heads.box_coder = _ExportBoxCoder.from_box_coder(export_model.roi_heads.box_coder)
+class TorchvisionFasterRCNNParams(TorchvisionNetworkParams):
+    min_score: float = Field(description="Score threshold in the network. The runtime threshold filters on top")
+    nms_iou_threshold: float
+    max_detections: int = Field(gt=0, description="Highest scoring detections the network returns")
 
-    dummy = torch.rand(3, 480, 640)
-    with _export_safe_ops():
-        onnx_export(
-            _FullGraphDetector(export_model),
-            (dummy,),
-            path_onnx,
-            input_names=["image"],
-            output_names=["boxes", "scores", "labels"],
-            dynamic_axes={
-                "image": {1: "height", 2: "width"},
-                "boxes": {0: "detections"},
-                "scores": {0: "detections"},
-                "labels": {0: "detections"},
-            },
-            opset_version=opset_version,
+
+@register_component
+class TorchvisionFasterRCNN(TorchNetworkComponent):
+    """The full Faster R-CNN model for one image: 'image' (3, H, W) in [0, 1] -> final 'boxes' (K, 4) xyxy in
+    pixels of the image, 'scores' (K,) and 'labels' (K,). Resize, normalization and NMS are part of the network."""
+
+    type = "torchvision_faster_rcnn"
+    params_model = TorchvisionFasterRCNNParams
+    params: TorchvisionFasterRCNNParams
+    input_ports = ("image",)
+    output_ports = ("boxes", "scores", "labels")
+
+    @classmethod
+    def build_model(cls, params: TorchvisionFasterRCNNParams, path_weights: Path, device: torch.device) -> nn.Module:  # type: ignore[override]
+        model = _build_detector(params.architecture, params.num_classes, path_weights)
+        if not isinstance(model, FasterRCNN):
+            raise ValueError(f"'{params.architecture}' is not a Faster R-CNN model.")
+        model.roi_heads.score_thresh = params.min_score
+        model.roi_heads.nms_thresh = params.nms_iou_threshold
+        model.roi_heads.detections_per_img = params.max_detections
+        return _FullGraphDetector(model).to(device).eval()
+
+    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        boxes, scores, labels = self.model(inputs["image"])
+        return {"boxes": boxes, "scores": scores, "labels": labels}
+
+    def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
+        options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION})
+        export_model = copy.deepcopy(self.model).cpu().eval()
+        # torchvision handles images without proposals (e.g. blank frames, common in video) with Python branches
+        # and reshapes that don't survive tracing, and computes the resize in float32 when traced. Replace those
+        # parts for the export (see the helpers above).
+        roi_heads = export_model.model.roi_heads
+        roi_heads.box_coder = _ExportBoxCoder.from_box_coder(roi_heads.box_coder)
+
+        with _export_safe_ops():
+            onnx_export(
+                export_model,
+                (torch.rand(3, 480, 640),),
+                path_onnx,
+                input_names=["image"],
+                output_names=["boxes", "scores", "labels"],
+                dynamic_axes={
+                    "image": {1: "height", 2: "width"},
+                    "boxes": {0: "detections"},
+                    "scores": {0: "detections"},
+                    "labels": {0: "detections"},
+                },
+                opset_version=options["opset_version"],
+            )
+        params = NetworkParams(
+            input_tensors=[TensorInfo(name="image", shape=[3, None, None])],
+            output_tensors=[
+                TensorInfo(name="boxes", shape=[None, 4]),
+                TensorInfo(name="scores", shape=[None]),
+                TensorInfo(name="labels", shape=[None], dtype="int64"),
+            ],
         )
-
-    transform = model.transform
-    return RuntimeInfo(
-        model_format="onnx",
-        inference_engine="onnxruntime",
-        file_path=MODEL_FILENAME,
-        precision="fp32",
-        input=InputInfo(tensors=[TensorInfo(name="image", shape=[3, None, None])]),
-        outputs=[
-            TensorInfo(name="boxes", shape=[None, 4]),
-            TensorInfo(name="scores", shape=[None]),
-            TensorInfo(name="labels", shape=[None], dtype="int64"),
-        ],
-        # Resize (aspect ratio preserving) and normalization are part of the graph. Boxes come out in pixel
-        # coordinates of the input image.
-        preprocessing=PreprocessingInfo(
-            color_order="RGB",
-            scale=1 / 255,
-            mean=list(transform.image_mean),
-            std=list(transform.image_std),
-            layout="NCHW",
-            dtype="float32",
-            in_graph=["resize", "normalize"],
-        ),
-        quantization_hints=FASTER_RCNN_QUANTIZATION_HINTS,
-        postprocessing=PostprocessingInfo(
-            decoder=DECODER_BOXES_SCORES_LABELS,
-            params={"score_threshold": runtime_score_threshold},
-        ),
-        provenance={
-            "graph_min_score": export_model.roi_heads.score_thresh,
-            "graph_max_detections": export_model.roi_heads.detections_per_img,
-        },
-    )
+        return OnnxExport(params=params, batched=False)

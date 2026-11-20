@@ -1,49 +1,55 @@
-"""Export RF-DETR detection models to ONNX model bundles.
+"""Model bundles of RF-DETR detection models.
 
 Sources: a model archive of trainer-object-detection (e.g. a platform checkpoint) or pretrained COCO weights by
-name. The network is exported with RF-DETR's own ONNX export: input '[N, 3, R, R]' with a dynamic batch axis,
-outputs one box per query ('dets', normalized center x, center y, width, height) and the class logits per query
-('labels'). Sigmoid, top-k over (query, class) and the box conversion run in the flavor (decoder
-'rfdetr_detection'), as RF-DETR's 'PostProcess'. DETR-style models need no NMS.
+name. The bundle is a graph of components:
+
+    load_image -> resize -> to_tensor -> network -> topk -> to_bboxes
+
+The network is a torch component ('rfdetr_network'): input '[N, 3, R, R]', outputs one box per query ('dets',
+normalized center x, center y, width, height) and the class logits per query ('labels'). It converts to ONNX with
+RF-DETR's own export, and from there to OpenVINO (see 'inference_model_core.convert'). Sigmoid, top-k over
+(query, class) and the box conversion run after the network ('query_topk'), as RF-DETR's 'PostProcess'.
+DETR-style models need no NMS.
 
 Preprocessing follows RF-DETR's 'predict': resize to R x R (torchvision 'resize', antialiased on tensors), scale
 to [0, 1], the model's mean/std.
 
 Logit column i is class i of the task, also for COCO ids without a category (placeholder classes named
 'NotDefined_*', as in the trainer's archives). A model trained on N classes has one more column ("no object"),
-which is not a task class: the decoder drops labels beyond the task's classes.
+which is not a task class: 'detections_to_bboxes' drops labels beyond the task's classes.
 """
 
+import argparse
 import importlib.metadata
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-import onnx
 import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
+from pydantic import BaseModel, ConfigDict, Field
 from rfdetr import detr
 from rfdetr.util.coco_classes import COCO_CLASSES
 
 from inference_model_core import (
-    InputInfo,
+    ConversionInfo,
+    GraphInfo,
     ModelBundleInfo,
-    PostprocessingInfo,
-    PreprocessingInfo,
-    QuantizationHints,
-    ResizeInfo,
-    RuntimeInfo,
+    NetworkParams,
     TensorInfo,
+    register_component,
     write_bundle,
 )
+from inference_model_core.components import DetectionsToBboxes, ImageToTensor, LoadImage, QueryTopK, ResizeImage
+from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
+from inference_model_torch.component import OnnxExport, TorchNetworkComponent, load_state_dict_file
+from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, onnx_options
 from model_exporters.class_names import detection_task, placeholder_class_name
-from model_exporters.onnx_export import DEFAULT_OPSET_VERSION
 from model_exporters.trainer_archive import open_trainer_archive
 
 FRAMEWORK = "rfdetr"
-DECODER_RFDETR_DETECTION = "rfdetr_detection"
-MODEL_FILENAME = "model.onnx"
+WEIGHTS_FILE = "network/weights.pth"
 TASK_NAME = "object_detection"
 # Score threshold of trainer-object-detection's inference ('InferenceConfig.threshold')
 DEFAULT_SCORE_THRESHOLD = 0.05
@@ -57,6 +63,59 @@ MODEL_CLASSES: Dict[str, Type[detr.RFDETR]] = {
 }
 
 
+class RFDETRNetworkParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_name: str = Field(description=f"RF-DETR model. Options: {list(MODEL_CLASSES)}")
+
+
+@register_component
+class RFDETRNetwork(TorchNetworkComponent):
+    """The RF-DETR network: 'input' (N, 3, R, R) -> 'dets' (N, Q, 4) boxes as normalized (center x, center y,
+    width, height) and 'labels' (N, Q, C) class logits per query."""
+
+    type = "rfdetr_network"
+    params_model = RFDETRNetworkParams
+    params: RFDETRNetworkParams
+    input_ports = ("input",)
+    output_ports = ("dets", "labels")
+    model: detr.RFDETR
+
+    @classmethod
+    def build_model(cls, params: RFDETRNetworkParams, path_weights: Path, device: torch.device) -> detr.RFDETR:  # type: ignore[override]
+        # RF-DETR unpickles its checkpoints. Bundles hold checkpoints of tensors and plain values only (see
+        # 'write_checkpoint'): reading them here without unpickling objects rejects anything else.
+        load_state_dict_file(path_weights)
+        model = _model_class(params.model_name)(pretrain_weights=str(path_weights))
+        model.model.model = model.model.model.to(device).eval()
+        model.model.device = device
+        return model
+
+    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        outputs = self.model.model.model(inputs["input"])
+        return {"dets": outputs["pred_boxes"], "labels": outputs["pred_logits"]}
+
+    def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
+        options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
+        model, dynamic_batch = self.model, options["dynamic_batch"]
+        with tempfile.TemporaryDirectory(prefix="rfdetr_export_") as tmp_dir:
+            model.export(
+                output_dir=tmp_dir, dynamic_batch=dynamic_batch, opset_version=options["opset_version"], verbose=False
+            )
+            (path_exported,) = Path(tmp_dir).glob("*.onnx")
+            path_exported.replace(path_onnx)
+
+        batch, resolution = None if dynamic_batch else 1, model.model.resolution
+        n_queries, n_columns = model.model_config.num_queries, model.model_config.num_classes + 1
+        params = NetworkParams(
+            input_tensors=[TensorInfo(name="input", shape=[batch, 3, resolution, resolution])],
+            output_tensors=[
+                TensorInfo(name="dets", shape=[batch, n_queries, 4]),
+                TensorInfo(name="labels", shape=[batch, n_queries, n_columns]),
+            ],
+        )
+        return OnnxExport(params=params, batched=True, provenance={"rfdetr": importlib.metadata.version("rfdetr")})
+
+
 def load_pretrained_model(model_name: str) -> Tuple[detr.RFDETR, List[str]]:
     """Pretrained COCO model (weights are downloaded on first use). Returns (model, category name per logit
     column), with placeholders for COCO ids without a category."""
@@ -66,133 +125,178 @@ def load_pretrained_model(model_name: str) -> Tuple[detr.RFDETR, List[str]]:
     return model, categories
 
 
-def load_trainer_archive(path_archive: Union[str, Path]) -> Tuple[detr.RFDETR, List[str], str]:
-    """Model from a trainer-object-detection archive. Returns (model, task class names, model name)."""
+def create_pretrained_rfdetr_detection_bundle(
+    model_name: str, path_bundle: Union[str, Path], overwrite: bool = False
+) -> Path:
+    model, categories = load_pretrained_model(model_name)
+    path_weights = Path(model.model_config.pretrain_weights or "")
+    return create_rfdetr_detection_bundle(
+        model,
+        model_name=model_name,
+        path_weights=path_weights,
+        categories=categories,
+        path_bundle=path_bundle,
+        name=model_name,
+        variant=model_name,
+        overwrite=overwrite,
+        provenance={"weights": path_weights.name},
+    )
+
+
+def create_trainer_archive_rfdetr_bundle(
+    path_archive: Union[str, Path], path_bundle: Union[str, Path], overwrite: bool = False
+) -> Path:
+    """Bundle of a trainer-object-detection archive, with the task of the archive."""
     with open_trainer_archive(path_archive) as (config, path_weights):
         model_name = config["name"]
         task = TaskInfo.model_validate(config["task"])
         if task.primitive is not Bbox:
             raise ValueError(f"Only detection (Bbox) models are supported, '{model_name}' is '{task.primitive}'.")
         model = _model_class(model_name)(pretrain_weights=str(path_weights))
-    return model, list(task.get_class_names() or []), model_name
+        return create_rfdetr_detection_bundle(
+            model,
+            model_name=model_name,
+            path_weights=path_weights,
+            categories=list(task.get_class_names() or []),
+            path_bundle=path_bundle,
+            name=model_name,
+            variant=model_name,
+            overwrite=overwrite,
+            provenance={"trainer_archive": Path(path_archive).name},
+        )
 
 
-def export_pretrained_rfdetr_detection(
-    model_name: str,
-    path_bundle: Union[str, Path],
-    opset_version: int = DEFAULT_OPSET_VERSION,
-    overwrite: bool = False,
-) -> Path:
-    model, categories = load_pretrained_model(model_name)
-    return export_rfdetr_detection(
-        model,
-        categories,
-        path_bundle,
-        name=model_name,
-        variant=model_name,
-        opset_version=opset_version,
-        overwrite=overwrite,
-        provenance={"weights": Path(model.model_config.pretrain_weights or "").name},
-    )
-
-
-def export_trainer_archive_rfdetr(
-    path_archive: Union[str, Path],
-    path_bundle: Union[str, Path],
-    opset_version: int = DEFAULT_OPSET_VERSION,
-    overwrite: bool = False,
-) -> Path:
-    model, categories, model_name = load_trainer_archive(path_archive)
-    return export_rfdetr_detection(
-        model,
-        categories,
-        path_bundle,
-        name=model_name,
-        variant=model_name,
-        opset_version=opset_version,
-        overwrite=overwrite,
-        provenance={"trainer_archive": Path(path_archive).name},
-    )
-
-
-def export_rfdetr_detection(
+def create_rfdetr_detection_bundle(
     model: detr.RFDETR,
+    model_name: str,
+    path_weights: Union[str, Path],
     categories: List[str],
     path_bundle: Union[str, Path],
     name: str,
     variant: Optional[str] = None,
-    opset_version: int = DEFAULT_OPSET_VERSION,
     overwrite: bool = False,
     provenance: Optional[dict] = None,
 ) -> Path:
-    """Export an RF-DETR detection model as an ONNX model bundle.
+    """Write an RF-DETR detection model as a model bundle with a torch network.
 
     Args:
-        model: RF-DETR model ('rfdetr.detr.RFDETR'). Moved to CPU by the export.
+        model: RF-DETR model ('rfdetr.detr.RFDETR') built from 'path_weights'. Its settings (resolution,
+            normalization, number of detections) go into the bundle.
+        model_name: RF-DETR model of 'model' (see 'MODEL_CLASSES'). The bundle stores the weights and rebuilds
+            the model from this name.
+        path_weights: RF-DETR checkpoint of 'model'. It is unpickled, so it has to come from a trusted source.
+            The bundle gets a copy with only the weights and plain settings.
         categories: Class name per logit column (column i = class i), unique. Columns beyond the list (the
             "no object" column) are not task classes.
         path_bundle: Output bundle, a '.zip' path or a directory.
         name: Model name stored in the model info.
         variant: Informational variant stored in the model info.
-        opset_version: ONNX opset.
         overwrite: Replace an existing bundle.
-        provenance: Extra provenance information stored in the model info.
+        provenance: Extra provenance information stored with the network component.
     """
     model_config = model.model_config
     if model_config.segmentation_head or getattr(model_config, "use_grouppose_keypoints", False):
         raise ValueError("Only RF-DETR detection models are supported (no segmentation or keypoint heads).")
+    _model_class(model_name)
     resolution = model.model.resolution
-    n_queries, n_columns = model_config.num_queries, model_config.num_classes + 1
+    n_columns = model_config.num_classes + 1
     if len(categories) > n_columns:
         raise ValueError(f"Got {len(categories)} categories for a model with {n_columns} logit columns.")
     task = detection_task(categories, TASK_NAME)
 
-    with tempfile.TemporaryDirectory(prefix="rfdetr_export_") as tmp_dir:
-        model.export(output_dir=tmp_dir, dynamic_batch=True, opset_version=opset_version, verbose=False)
-        (path_onnx,) = Path(tmp_dir).glob("*.onnx")
-        onnx.checker.check_model(path_onnx.as_posix())
-
-        runtime = RuntimeInfo(
-            model_format="onnx",
-            inference_engine="onnxruntime",
-            file_path=MODEL_FILENAME,
-            precision="fp32",
-            input=InputInfo(tensors=[TensorInfo(name="input", shape=[None, 3, resolution, resolution])]),
-            outputs=[
-                TensorInfo(name="dets", shape=[None, n_queries, 4]),
-                TensorInfo(name="labels", shape=[None, n_queries, n_columns]),
-            ],
-            preprocessing=PreprocessingInfo(
-                color_order="RGB",
-                resize=ResizeInfo(
-                    mode="stretch", height=resolution, width=resolution, interpolation="linear", antialias=True
-                ),
-                scale=1 / 255,
-                mean=list(model.means),
-                std=list(model.stds),
-                layout="NCHW",
-                dtype="float32",
-            ),
-            # NNCF's default quantized the transformer as a CNN and dropped mAP from 0.66 to 0.0 on the micro
-            # dataset. Its transformer mode keeps softmax, layer norm and similar operations in floating point.
-            quantization_hints=QuantizationHints(model_type="transformer"),
-            postprocessing=PostprocessingInfo(
-                decoder=DECODER_RFDETR_DETECTION,
-                params={
-                    "score_threshold": DEFAULT_SCORE_THRESHOLD,
-                    "num_select": model.model.postprocess.num_select,
-                },
-            ),
+    resize = {
+        "mode": "stretch",
+        "height": resolution,
+        "width": resolution,
+        "interpolation": "linear",
+        "antialias": True,
+    }
+    components = [
+        LoadImage.create_info("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        ResizeImage.create_info(
+            "resize",
+            inputs={"image": "image_rgb"},
+            outputs={"image": "image_resized", "transform": "image_transform"},
+            params=resize,
+        ),
+        ImageToTensor.create_info(
+            "to_tensor",
+            inputs={"image": "image_resized"},
+            outputs={"tensor": "input_tensor"},
+            params={"scale": 1 / 255, "mean": list(model.means), "std": list(model.stds)},
+        ),
+        RFDETRNetwork.create_info(
+            "network",
+            inputs={"input": "input_tensor"},
+            outputs={"dets": "query_boxes", "labels": "query_logits"},
+            params={"model_name": model_name},
+            files=[WEIGHTS_FILE],
+            batched=True,
+            conversions={
+                TARGET_ONNX: ConversionInfo(options={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True}),
+                TARGET_OPENVINO: ConversionInfo(),
+                # NNCF's default quantized the transformer as a CNN and dropped mAP from 0.66 to 0.0 on the micro
+                # dataset. Its transformer mode keeps softmax, layer norm and similar operations in floating point.
+                TARGET_OPENVINO_INT8: ConversionInfo(options={"model_type": "transformer"}),
+            },
             provenance={
-                "exporter": __name__,
+                "created_by": __name__,
                 "rfdetr": importlib.metadata.version("rfdetr"),
                 "torch": torch.__version__,
-                "opset_version": opset_version,
                 **(provenance or {}),
             },
-        )
-        model_info = ModelBundleInfo(name=name, framework=FRAMEWORK, variant=variant, tasks=[task], runtime=runtime)
-        return write_bundle(path_bundle, model_info, files={MODEL_FILENAME: path_onnx}, overwrite=overwrite)
+        ),
+        QueryTopK.create_info(
+            "topk",
+            inputs={"boxes": "query_boxes", "logits": "query_logits", "transform": "image_transform"},
+            outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
+            params={"num_select": model.model.postprocess.num_select},
+        ),
+        DetectionsToBboxes.create_info(
+            "to_bboxes",
+            inputs={"boxes": "boxes", "scores": "scores", "labels": "labels", "transform": "image_transform"},
+            outputs={"predictions": "predictions"},
+            params={"task_name": TASK_NAME, "score_threshold": DEFAULT_SCORE_THRESHOLD},
+        ),
+    ]
+    model_info = ModelBundleInfo(
+        name=name,
+        framework=FRAMEWORK,
+        variant=variant,
+        tasks=[task],
+        graph=GraphInfo(inputs=["image"], outputs=["predictions"], components=components),
+    )
+    with tempfile.TemporaryDirectory(prefix="rfdetr_bundle_") as tmp_dir:
+        path_checkpoint = write_checkpoint(path_weights, Path(tmp_dir) / "weights.pth")
+        return write_bundle(path_bundle, model_info, files={WEIGHTS_FILE: path_checkpoint}, overwrite=overwrite)
+
+
+def write_checkpoint(path_source: Union[str, Path], path_checkpoint: Path) -> Path:
+    """Copy an RF-DETR checkpoint with only what inference needs: the weights and the plain settings.
+
+    Training state (optimizer, scheduler) is dropped, which shrinks the file to a third, and the result holds
+    tensors and plain values only, so it can be read without unpickling objects.
+    """
+    checkpoint = torch.load(path_source, map_location="cpu", weights_only=False)
+    # 'model' + 'args' in RF-DETR's own checkpoints, 'state_dict' + 'hyper_parameters' in PyTorch Lightning's
+    weights = {key: dict(checkpoint[key]) for key in ("model", "state_dict") if key in checkpoint}
+    if not weights:
+        raise ValueError(f"RF-DETR checkpoint '{path_source}' has neither 'model' nor 'state_dict' weights.")
+    settings = {}
+    for key in ("args", "hyper_parameters"):
+        values = checkpoint.get(key)
+        if isinstance(values, argparse.Namespace):
+            values = vars(values)
+        if isinstance(values, dict):
+            settings[key] = {name: value for name, value in values.items() if _is_plain(value)}
+    torch.save({**weights, **settings}, path_checkpoint)
+    return path_checkpoint
+
+
+def _is_plain(value: Any) -> bool:
+    if isinstance(value, (list, tuple)):
+        return all(_is_plain(item) for item in value)
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 def _model_class(model_name: str) -> Type[detr.RFDETR]:

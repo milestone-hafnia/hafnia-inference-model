@@ -1,16 +1,17 @@
 """Generic model export and inference:
 
-    1) torchvision model -> ONNX bundle
+    1) torchvision model -> model bundle -> ONNX bundle
     2) Run the ONNX bundle with ONNX Runtime
     3) Convert the ONNX bundle to an OpenVINO bundle
     4) Run the OpenVINO bundle with OpenVINO
     5) Visualize the predictions
     6) Benchmark the model on a dataset with Hafnia's benchmark
 
-A model bundle is a zip with the model files and a 'model_info.json' that describes the model: tasks,
-input tensors, preprocessing and postprocessing (decoder) settings. 'inference_model_from_path' reads the
-model info and picks the implementation (engine + model family) that runs it, so steps 2 and 4 are the
-same code. Predictions are Hafnia primitives, here 'Bbox' with normalized coordinates.
+A model bundle is a zip with the model files and a 'model_info.json' that describes the model: its tasks and
+a graph of components (e.g. resize -> to_tensor -> network -> nms -> to_bboxes) with their parameters.
+'inference_model_from_path' runs that graph, whatever the model family or the engine of the network, so steps
+2 and 4 are the same code. Converting a bundle replaces the network component and keeps the rest.
+Predictions are Hafnia primitives, here 'Bbox' with normalized coordinates.
 
 Run from the repo root (needs all extras: 'uv sync --all-extras'):
 
@@ -28,9 +29,8 @@ from hafnia.dataset.image_visualizations import draw_annotations
 from PIL import Image
 from rich import print as rprint
 
-from inference_model_core import inference_model_from_path, read_model_info
-from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
-from model_exporters.torchvision_detection import export_pretrained_torchvision_detection
+from inference_model_core import convert_bundle, inference_model_from_path, read_model_info
+from model_exporters.torchvision_detection import create_pretrained_torchvision_detection_bundle
 from package_openvino.metrics import run_benchmark
 
 ##### PREPARE EXAMPLE #####
@@ -38,6 +38,7 @@ MODEL_NAME = "ssdlite320_mobilenet_v3_large"  # Or "fasterrcnn_mobilenet_v3_larg
 
 PATH_DATASET = Path(__file__).parents[1] / "tests" / "data" / "micro-coco-2017"
 PATH_OUTPUT = Path(".data") / "examples" / "inference_model"
+PATH_TORCH = PATH_OUTPUT / f"{MODEL_NAME}_torch.zip"
 PATH_ONNX = PATH_OUTPUT / f"{MODEL_NAME}_onnx.zip"
 PATH_OPENVINO = PATH_OUTPUT / f"{MODEL_NAME}_openvino.zip"
 PATH_VISUALIZATION = PATH_OUTPUT / "ground_truth_onnx_openvino.png"
@@ -49,24 +50,24 @@ image = sample.read_image()
 ##########################
 
 
-# 1) Export a pretrained torchvision model to an ONNX bundle. This is the only step that needs torch.
-PATH_ONNX = export_pretrained_torchvision_detection(MODEL_NAME, path_bundle=PATH_ONNX, overwrite=True)
+# 1) Write a pretrained torchvision model as a model bundle (with a torch network) and convert it to an ONNX
+# bundle. This is the only step that needs torch.
+PATH_TORCH = create_pretrained_torchvision_detection_bundle(MODEL_NAME, path_bundle=PATH_TORCH, overwrite=True)
+PATH_ONNX = convert_bundle(PATH_TORCH, path_bundle=PATH_ONNX, target="onnx", overwrite=True)
 model_info = read_model_info(PATH_ONNX)
 rprint(f"1) Exported '{PATH_ONNX}'")
-rprint(f"   Input: {model_info.runtime.input.tensors[0].shape}, decoder: '{model_info.runtime.postprocessing.decoder}'")
+rprint("   Graph: " + " -> ".join(f"{c.name} ({c.runtime})" for c in model_info.graph.components))
 
 # 2) Load the ONNX bundle from path and run inference with ONNX Runtime
-model_onnx: InferenceModel = inference_model_from_path(PATH_ONNX, postprocessing_params={"score_threshold": 0.6})
+model_onnx: InferenceModel = inference_model_from_path(PATH_ONNX, params={"score_threshold": 0.6})
 predictions_onnx: list[Primitive] = model_onnx.predict(image)
 
 # 3) Convert the ONNX bundle to OpenVINO IR
-PATH_OPENVINO = export_onnx_bundle_to_openvino(PATH_ONNX, path_bundle=PATH_OPENVINO, overwrite=True)
+PATH_OPENVINO = convert_bundle(PATH_ONNX, path_bundle=PATH_OPENVINO, target="openvino", overwrite=True)
 rprint(f"3) Converted to '{PATH_OPENVINO}'")
 
 # 4) Load the OpenVINO bundle from path and run inference with OpenVINO
-model_openvino: InferenceModel = inference_model_from_path(
-    PATH_OPENVINO, postprocessing_params={"score_threshold": 0.3}
-)
+model_openvino: InferenceModel = inference_model_from_path(PATH_OPENVINO, params={"score_threshold": 0.3})
 predictions_openvino: list[Primitive] = model_openvino.predict(image)
 
 # 5) Model predictions are standardized with Hafnia primitives

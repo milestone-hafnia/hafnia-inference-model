@@ -1,12 +1,13 @@
 """Reading and writing model bundles.
 
-A model bundle is either a zip file or a directory with a 'model_info.json' at its root and the model
-files listed in 'model_info.runtime' ('file_path' and 'extra_files'), e.g.
+A model bundle is either a zip file or a directory with a 'model_info.json' at its root and the files of the
+graph's components, each in the folder of its component, e.g.
 
     model.zip
     ├── model_info.json
-    ├── model.xml
-    └── model.bin
+    └── network
+        ├── model.xml
+        └── model.bin
 
 A zip bundle is a single file, which is how models are passed to the trainer package on the platform
 (as a checkpoint). The directory form is useful for local development and serving.
@@ -61,8 +62,8 @@ def missing_bundle_files(path_bundle: PathLike, model_info: ModelBundleInfo) -> 
     if is_zip_bundle(path_bundle):
         with zipfile.ZipFile(path_bundle, "r") as archive:
             available = set(archive.namelist())
-        return [path for path in model_info.runtime.all_files() if path not in available]
-    return [path for path in model_info.runtime.all_files() if not (path_bundle / path).is_file()]
+        return [path for path in model_info.all_files() if path not in available]
+    return [path for path in model_info.all_files() if not (path_bundle / path).is_file()]
 
 
 def validate_bundle(path_bundle: PathLike) -> ModelBundleInfo:
@@ -90,7 +91,7 @@ def open_bundle(path_bundle: PathLike) -> Iterator[Path]:
     with tempfile.TemporaryDirectory(prefix="model_bundle_") as extract_dir:
         with zipfile.ZipFile(path_bundle, "r") as archive:
             # Only extract the files referenced by the (validated) model info
-            for member in [MODEL_INFO_FILENAME, *model_info.runtime.all_files()]:
+            for member in [MODEL_INFO_FILENAME, *model_info.all_files()]:
                 archive.extract(member, path=extract_dir)
         yield Path(extract_dir)
 
@@ -104,10 +105,10 @@ def write_bundle(
     """Write a model bundle. A path ending with '.zip' creates a zip bundle, otherwise a directory.
 
     'files' maps bundle-relative paths to file sources and must contain exactly the files referenced
-    by 'model_info.runtime' - a bundle never holds files its model info doesn't describe.
+    by the components in 'model_info.graph' - a bundle never holds files its model info doesn't describe.
     """
     path_bundle = Path(path_bundle)
-    expected_files = set(model_info.runtime.all_files())
+    expected_files = set(model_info.all_files())
     provided_files = {check_relative_bundle_path(path) for path in files}
     if provided_files != expected_files:
         raise ValueError(

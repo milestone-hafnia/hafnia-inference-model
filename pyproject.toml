@@ -16,23 +16,36 @@ dependencies = [
 torch = ["onnx>=1.17.0", "torch==2.10.0", "torchvision==0.25.0"]
 onnxruntime = ["onnxruntime>=1.26.0"]
 openvino = ["nncf>=2.19.0", "openvino>=2025.3.0"]
-rfdetr = ["rfdetr==1.8.1"]  # RF-DETR exporter (model_exporters.rfdetr_detection), with the torch extra
+rfdetr = ["rfdetr==1.8.1"]  # RF-DETR bundles (model_exporters.rfdetr_detection), with the torch extra
 
-# Engine and exporter dependencies are added as optional extras when the modules using them are
-# implemented, so each module (and later each repo) only pulls in what it needs:
+# Engine and model family dependencies are optional extras, so each module (and later each repo) only pulls
+# in what it needs:
 # - "onnxruntime": inference_model_onnxruntime
 # - "openvino":    inference_model_openvino (openvino, nncf)
-# - "torch":       model_exporters (torch, torchvision)
+# - "torch":       inference_model_torch, model_exporters (torch, torchvision, onnx)
 # - "rfdetr":      model_exporters.rfdetr_detection (rfdetr)
 
 [dependency-groups]
 dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
 
-# Flavors are discovered through this entry point group, also from separately installed packages.
-# Each entry point names a module that registers its flavors with 'register_flavor' on import.
-[project.entry-points."hafnia.inference_models"]
-onnxruntime = "inference_model_onnxruntime.flavors"
-openvino = "inference_model_openvino.flavors"
+# Component implementations and converters of the packages in this repo. A separately installed package adds its
+# own to the same groups. They are imported only when a bundle needs them (see 'inference_model_core.component').
+[project.entry-points."hafnia.inference_model_components"]
+# "<type>/<runtime>/<engine>"
+"network/onnx/onnxruntime" = "inference_model_onnxruntime.components:OnnxRuntimeNetwork"
+"network/onnx/openvino" = "inference_model_openvino.components:OpenVINOOnnxNetwork"
+"network/openvino/openvino" = "inference_model_openvino.components:OpenVINONetwork"
+"torchvision_classifier/torch/torch" = "model_exporters.torchvision_classification:TorchvisionClassifier"
+"torchvision_ssd_network/torch/torch" = "model_exporters.torchvision_detection:TorchvisionSSDNetwork"
+"torchvision_faster_rcnn/torch/torch" = "model_exporters.torchvision_detection:TorchvisionFasterRCNN"
+"rfdetr_network/torch/torch" = "model_exporters.rfdetr_detection:RFDETRNetwork"
+
+[project.entry-points."hafnia.inference_model_converters"]
+# "<source runtime>/<target>"
+"torch/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
+"onnx/openvino" = "inference_model_openvino.convert:convert_onnx_to_openvino"
+"onnx/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
+"openvino/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
 
 [build-system]
 requires = ["hatchling"]
@@ -44,6 +57,7 @@ packages = [
     "src/inference_model_core",
     "src/inference_model_onnxruntime",
     "src/inference_model_openvino",
+    "src/inference_model_torch",
     "src/model_exporters",
     "src/package_openvino",
 ]

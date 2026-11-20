@@ -1,4 +1,5 @@
-"""ResNet18 -> ONNX bundle, checked against the original torch model (pretrained and a trainer archive)."""
+"""Bundles of ResNet18, checked against the original torch model (pretrained and a trainer archive): the bundle
+with the torch network and its conversion to ONNX."""
 
 import json
 import zipfile
@@ -9,14 +10,14 @@ import pytest
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
 
-from inference_model_core import inference_model_from_path, read_model_info
+from inference_model_core import NetworkParams, convert_bundle, inference_model_from_path, read_model_info
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
 import torchvision.transforms.functional as F  # noqa: E402
 from torchvision.models import resnet18 as build_resnet18  # noqa: E402
 
-from model_exporters.registry import export_trainer_archive  # noqa: E402
+from model_exporters.registry import create_bundle_from_trainer_archive  # noqa: E402
 from model_exporters.torchvision_classification import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 
 pytestmark = pytest.mark.slow
@@ -30,13 +31,38 @@ def torch_probabilities(model, image: np.ndarray, image_size: int) -> np.ndarray
         return model(tensor[None]).softmax(dim=1)[0].numpy()
 
 
-def test_model_info(resnet18):
-    info = read_model_info(resnet18[2])
-    assert (info.framework, info.runtime.postprocessing.decoder) == ("torchvision", "classification_logits")
+def test_model_info(resnet18_torch, resnet18):
+    torch_info, info = read_model_info(resnet18_torch[2]), read_model_info(resnet18[2])
+    torch_network, network = torch_info.graph.get_component("network"), info.graph.get_component("network")
+
+    assert [c.type for c in torch_info.graph.components] == [
+        "load_image",
+        "resize_image",
+        "image_to_tensor",
+        "torchvision_classifier",
+        "classification_from_logits",
+    ]
+    assert (torch_network.runtime, torch_network.files) == ("torch", ["network/weights.pth"])
+    assert torch_network.params == {"architecture": "resnet18", "num_classes": 1000, "image_size": 224}
+    assert (network.type, network.runtime, network.batched) == ("network", "onnx", True)
+    assert NetworkParams.model_validate(network.params).input_tensors[0].shape == [None, 3, 224, 224]
+
+    assert info.framework == "torchvision"
     assert info.tasks[0].primitive is Classification
     assert len(info.tasks[0].get_class_names()) == 1000
-    assert info.runtime.input.tensors[0].shape == [None, 3, 224, 224]
-    assert info.runtime.preprocessing.resize.antialias
+    assert info.graph.get_component("resize").params["antialias"]
+
+
+def test_torch_bundle_matches_torch(resnet18_torch, images):
+    """The torch network is rebuilt from the architecture name and the stored weights."""
+    torch_model, _, path_bundle = resnet18_torch
+    model = inference_model_from_path(path_bundle)
+    for image in images:
+        image_224 = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
+        expected = torch_probabilities(torch_model, image_224, 224)
+        (prediction,) = model.predict(image_224)
+        assert prediction.class_idx == int(expected.argmax())
+        assert prediction.confidence == pytest.approx(float(expected.max()), abs=1e-5)
 
 
 def test_matches_torch_without_resize(resnet18, images):
@@ -75,15 +101,20 @@ def test_trainer_archive(tmp_path, images):
         archive.writestr("model_config.json", json.dumps({**config, "image_size": 64}))
         archive.write(path_weights, arcname="resnet18.pth")
 
-    path_bundle = export_trainer_archive(path_archive, tmp_path / "bundle.zip")
-    info = read_model_info(path_bundle)
-    assert info.tasks[0].get_class_names() == ["cat", "dog", "car"]
-    assert info.runtime.input.tensors[0].shape == [None, 3, 64, 64]
+    path_torch_bundle = create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle_torch.zip")
+    torch_info = read_model_info(path_torch_bundle)
+    assert torch_info.tasks[0].get_class_names() == ["cat", "dog", "car"]
+    assert torch_info.graph.get_component("network").params["image_size"] == 64
+    assert torch_info.graph.get_component("resize").params["height"] == 64
 
-    model = inference_model_from_path(path_bundle)
-    for image in images:
-        image_64 = cv2.resize(image, (64, 64), interpolation=cv2.INTER_AREA)
-        expected = torch_probabilities(torch_model, image_64, 64)
-        (prediction,) = model.predict(image_64)
-        assert prediction.class_name == ["cat", "dog", "car"][int(expected.argmax())]
-        assert prediction.confidence == pytest.approx(float(expected.max()), abs=1e-4)
+    path_bundle = convert_bundle(path_torch_bundle, tmp_path / "bundle.zip", target="onnx")
+    network = read_model_info(path_bundle).graph.get_component("network")
+    assert NetworkParams.model_validate(network.params).input_tensors[0].shape == [None, 3, 64, 64]
+
+    for model in (inference_model_from_path(path_torch_bundle), inference_model_from_path(path_bundle)):
+        for image in images:
+            image_64 = cv2.resize(image, (64, 64), interpolation=cv2.INTER_AREA)
+            expected = torch_probabilities(torch_model, image_64, 64)
+            (prediction,) = model.predict(image_64)
+            assert prediction.class_name == ["cat", "dog", "car"][int(expected.argmax())]
+            assert prediction.confidence == pytest.approx(float(expected.max()), abs=1e-4)

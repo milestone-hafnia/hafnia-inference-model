@@ -1,6 +1,7 @@
 # package-openvino: Generic Model Export and Inference
 
-Status: design agreed and reviewed (2026-11-18); see [section 11](#11-decisions). Implementation steps 1–6 done: package scaffold, `src/inference_model_core`, torchvision → ONNX export, the ONNX Runtime flavors, the OpenVINO flavors, ONNX → OpenVINO conversion, INT8 quantization and the benchmark script.
+Status: implemented. Designed and reviewed on 2026-11-18, and redesigned on 2026-11-20 as a graph of
+components (section 3). See [section 11](#11-decisions) for the decisions.
 Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
 `../trainer-object-detection` and `../trainer-classification`.
 
@@ -30,7 +31,7 @@ Two things have to be standardized to make this work:
   machine-readable description, "model info", that says how to run it and what it returns.
 
 For this first iteration everything lives in one trainer package, `package-openvino`. It does
-**no training**. Its scripts are generic: they work on any model bundle whose flavor is
+**no training**. Its scripts are generic: they work on any model bundle whose components are
 installed, not on one specific architecture.
 
 ---
@@ -65,414 +66,357 @@ Takeaways:
 
 ## 3. Core concepts
 
+> **Redesigned on 2026-11-20: a model is a graph of components.** Until then a model was run by a
+> *flavor*, one class per (engine, framework, decoder), with fixed preprocess / predict / postprocess
+> stages. Four model families on two engines needed eight flavor classes, and every new family would
+> add one per engine. Section 11 lists the decisions, "The flavor design" at the end what it was.
+
 ### 3.1 Model bundle (storage format)
 
-A model bundle is a **single zip file** (so it fits the existing "checkpoint is a zip"
-platform convention) with a fixed entry point:
+A model bundle is a **single zip file** (so it fits the existing "checkpoint is a zip" platform
+convention) or the same content as a directory:
 
 ```
 ssdlite320_openvino_int8.zip
 ├── model_info.json        # always present, always this name
-├── model.xml              # file_path from model_info points here
-└── model.bin              # companion file listed in extra_files
-```
-
-```
-ssdlite320_onnx.zip
-├── model_info.json
-└── model.onnx             # (+ model.onnx.data if weights are stored externally)
+└── network/               # files of the component named 'network'
+    ├── model.xml
+    └── model.bin
 ```
 
 Rules:
 
-- `model_info.json` at the root describes everything else. Paths inside it are relative to
-  the bundle root.
-- A model can be more than one file (OpenVINO IR is always `.xml` + `.bin`, large ONNX models
-  have external data). So we need `file_path` (the entry file) **plus** `extra_files`.
-- Loaders should accept **either the zip or an already extracted directory**. This avoids
-  temp-dir handling in serving and allows fast local iteration.
-- Only non-executable formats (ONNX, OpenVINO IR, later TensorRT engines and `torch.export`
-  `.pt2`) are allowed. No pickled `state_dict`/`torch.save` objects in user uploads.
+- `model_info.json` at the root describes everything else. Paths inside it are relative to the
+  bundle root, and each component keeps its files in a folder with its name.
+- A bundle holds exactly the files its model info lists.
+- Loaders accept **either the zip or an already extracted directory**. This avoids temp-dir
+  handling in serving and allows fast local iteration.
+- **Loading a bundle never runs code from it.** Processing steps are named component types whose
+  code lives in the installed packages. Weights are read as data (`torch.load(weights_only=True)`).
 
-### 3.2 Model info (the description inside the bundle)
+### 3.2 Model info: tasks and a graph
 
-Model info answers three questions:
+Model info answers two questions:
 
-1. **What is it?** Name, framework, variant, tasks/classes. This doesn't change when the model
-   is converted.
-2. **How is it stored and run?** Format, engine, files, input tensor spec, precision. This
-   changes with every export.
-3. **How do I get from an image to tensors and from tensors to primitives?** Pre- and
-   post-processing.
+1. **What is it?** Name, framework, variant, tasks/classes. This doesn't change when the model is
+   converted.
+2. **How do I get from an image to primitives?** The `graph`: an ordered list of components.
 
-The list from the brief maps onto these as follows:
+All inputs, outputs and intermediate values of a model are items of **one data dictionary**. A
+component names the keys it reads and the keys it writes. The graph names the keys the caller
+provides (`inputs`, e.g. `image`) and gets back (`outputs`, e.g. `predictions`).
 
-| Brief | Proposed field | Group |
+```
+image ─▶ load_image ─▶ resize ─▶ to_tensor ─▶ network ─▶ nms ─▶ to_bboxes ─▶ predictions
+          (numpy)      (numpy)    (numpy)     (onnx)   (numpy)   (numpy)
+                          └──────────── image_transform ───────────┘
+```
+
+A component has:
+
+| Field | Meaning |
+|---|---|
+| `name` | Unique in the graph, also the folder of its files |
+| `type` | What it does: `resize_image`, `network`, `anchor_nms`, ... |
+| `runtime` | How it is expressed: `numpy`, `torch`, `onnx`, `openvino` |
+| `inputs`, `outputs` | Port (argument or tensor name) → data dictionary key |
+| `params` | Typed parameters of the component type |
+| `files` | Its files in the bundle |
+| `batched` | Called once per batch (inputs stacked on a new first axis) or once per sample |
+| `conversions` | Target → `{supported, reason, options}`: what it can be converted to, and how |
+| `provenance` | Where it came from: parent component, tool versions, quantization settings |
+
+Ports are mapped to keys so one component type can be used twice in a graph, and so a network's
+tensor names don't have to be the names the rest of the graph uses.
+
+The graph is validated when the model info is read: unique component names and files, every key
+a component reads comes from a graph input or an earlier component, and every key is written
+exactly once.
+
+### 3.3 Components
+
+A component **implementation** is a class for one (type, runtime, engine):
+
+| Type | Runtime | Engine | Where |
+|---|---|---|---|
+| `load_image`, `resize_image`, `image_to_tensor` | numpy | numpy | `inference_model_core/components/image.py` |
+| `anchor_nms`, `query_topk`, `detections_to_bboxes` | numpy | numpy | `inference_model_core/components/detection.py` |
+| `classification_from_logits` | numpy | numpy | `inference_model_core/components/classification.py` |
+| `network` | onnx | onnxruntime | `inference_model_onnxruntime/components.py` |
+| `network` | onnx, openvino | openvino | `inference_model_openvino/components.py` |
+| `torchvision_ssd_network`, `torchvision_faster_rcnn` | torch | torch | `model_exporters/torchvision_detection.py` |
+| `torchvision_classifier` | torch | torch | `model_exporters/torchvision_classification.py` |
+| `rfdetr_network` | torch | torch | `model_exporters/rfdetr_detection.py` |
+
+- **Runtime and engine are separate on purpose.** The runtime says how a component is stored, the
+  engine what executes it. An ONNX network runs on ONNX Runtime by default and on OpenVINO when
+  asked.
+- **Networks are generic.** A `network` is a tensor graph in model files whose ports are its
+  tensor names. The engines know nothing about model families: adding a family needs no engine
+  code.
+- **Processing components are thin wrappers** with typed parameters around plain NumPy functions
+  (`preprocessing.py`, `detection.py`, `classification.py`, `primitives.py`), which are tested on
+  their own. They don't depend on torch: an OpenVINO serving image shouldn't need PyTorch.
+- **Torch networks are stored by reference**: the weights plus the parameters that name the code
+  building the module (e.g. `architecture: ssdlite320_mobilenet_v3_large`). They are the source
+  format of a model. Loading one needs torch and the model's library; the ONNX and OpenVINO
+  versions are self-contained.
+
+Registry: implementations register with the `@register_component` class decorator. Packages list
+theirs in the entry point group `hafnia.inference_model_components`, named
+`<type>/<runtime>/<engine>`, and are **imported only when a graph needs them**. Loading an ONNX
+bundle never imports torch, and a separately installed package adds components without a central
+list to edit.
+
+Standard components and the data they pass on:
+
+| Type | Inputs → outputs | Parameters |
 |---|---|---|
-| Model input (image/video) | `runtime.input.modality` | runtime |
-| Model tasks | `tasks: List[TaskInfo]` (already on `ModelInfo`) | identity |
-| Model framework | `framework` (`torchvision`, `rfdetr`, `ultralytics`, ...) | identity |
-| Model type (nano, large, ...) | `variant` (decided in Q3, section 11) | identity |
-| Model format | `runtime.model_format` (`onnx`, `openvino`, `pt2`, `tensorrt`) | runtime |
-| file_path | `runtime.file_path` (+ `runtime.extra_files`) | runtime |
-| Inference engine | `runtime.inference_engine` (`onnxruntime`, `openvino`, ...) | runtime |
-| Preprocessing steps | `runtime.preprocessing` | runtime |
-| Postprocessing steps | `runtime.postprocessing` | runtime |
-| *(not in brief)* | `format_version` | top level, so the schema can evolve |
-| *(not in brief)* | `runtime.precision` (`fp32`/`fp16`/`int8`) | runtime |
-| *(not in brief)* | `runtime.provenance` (parent bundle, tool versions, quantization settings) | runtime |
+| `load_image` | image (path, PIL, array) → image (H, W, 3 uint8 RGB) | |
+| `resize_image` | image → image, transform | mode (stretch, letterbox, keep_ratio_pad), height, width, interpolation, antialias, pad_value |
+| `image_to_tensor` | image → tensor (no batch axis) | color_order, scale, mean, std, layout, dtype |
+| `anchor_nms` | boxes (A, 4), scores (A, C) → boxes, scores, labels | score_threshold, nms_iou_threshold, topk_candidates, max_detections, background_index |
+| `query_topk` | boxes (Q, 4) cxcywh, logits (Q, C), transform → boxes, scores, labels | num_select |
+| `detections_to_bboxes` | boxes, scores, labels, transform *or* image → predictions | task_name, score_threshold |
+| `classification_from_logits` | logits (C,) → predictions | task_name, score_threshold |
 
-Note that **format and engine are separate on purpose**. An `.onnx` file can run on ONNX
-Runtime, on OpenVINO (it reads ONNX directly) and on TensorRT. The engine decides which flavor
-loads the model. The format describes the files.
+`transform` (`ImageTransform`) says how the original image maps to the network input (scale and
+padding), so boxes can be mapped back to normalized coordinates on the original image, which is
+what Hafnia primitives use. A network that resizes itself returns boxes in image pixels:
+`detections_to_bboxes` then takes the `image` instead of a `transform`.
 
-### 3.3 Pre- and post-processing: config vs code
+Rule of thumb, unchanged: **model info holds configuration, the installed packages hold code.**
 
-This is the hardest design question. The two halves behave differently.
+### 3.4 Execution
 
-**Pre-processing is mostly declarative.** Almost every vision model does some combination of:
-decode → color order (RGB/BGR) → resize (stretch / letterbox / keep-ratio + pad / none) →
-scale (÷255) → normalize (mean/std) → layout (HWC→CHW) → dtype → batch. We can describe this
-as a small typed spec, and implement it **once**, in NumPy/OpenCV, shared by all flavors.
+`ModelGraph` loads the components of a bundle and runs them in order on the data dictionary.
 
-Pre-processing must also return **per-image metadata** (original size, scale factors,
-padding). Post-processing needs it to map boxes and masks back to normalized coordinates on the
-original image, which is what Hafnia primitives use.
+- **Values are kept per sample, without a batch axis.** A `batched` component gets the values of
+  all samples stacked on a new first axis, and its outputs are split again. Any other component is
+  called once per sample. So `resize` and `nms` are written for one image, an SSD network gets
+  `[N, 3, 320, 320]`, and Faster R-CNN (`[3, H, W]` in, a variable number of boxes out) is simply
+  not batched. There is no special case for it.
+- A network with a static batch axis takes batches of that size: the graph feeds it in chunks
+  (`max_batch_size`).
+- **Components of different runtimes run in one graph** and exchange NumPy arrays. A torch
+  network between NumPy components is the normal case for a source bundle.
+- `run(inputs, outputs=[...])` returns intermediate values and only runs the components needed for
+  them. Calibration and the comparison of network outputs use this.
+- `run_batch(..., timings=...)` collects the time spent per component, which is the latency
+  report.
+- The executor itself costs little: 0.06 ms per call between the components of an SSD graph. Run
+  back to back on the same SSD network, `predict` took 12.3–16.2 ms with the flavor design and
+  12.6–12.7 ms with the graph (ONNX Runtime, dev laptop), a difference within the noise of the
+  machine.
 
-Some models already contain pre-processing inside the graph. Exported torchvision detection
-models resize and normalize internally, and OpenVINO can embed steps with `PrePostProcessor`.
-The spec needs a way to say "this step is already in the graph".
-
-**Post-processing is mostly code.** Decoding outputs is model-family specific:
-
-- torchvision detection ONNX → `boxes` (pixel xyxy), `labels`, `scores`, with NMS already in the graph
-- RF-DETR → `pred_logits` + `pred_boxes` (normalized cxcywh), sigmoid, top-k, background index = last
-- YOLO → raw anchors that need NMS
-- classification → logits that need softmax/argmax
-
-Trying to express all of that declaratively becomes a mini language. Instead:
-
-- `postprocessing.decoder`: a **named** decoder (e.g. `"torchvision_detection"`,
-  `"rfdetr_detection"`, `"classification_softmax"`), which selects code.
-- `postprocessing.params`: the decoder's **parameters** (score threshold, NMS IoU, max
-  detections, box format, output tensor names, background index, label offset, ...).
-
-Rule of thumb: **model info holds configuration, the flavor holds code.** A model info file
-should never need to contain executable logic.
-
-### 3.4 Flavors
-
-A **flavor** is a concrete `InferenceModel` subclass for one *(inference engine × model
-family)* combination. All models of the same family share one flavor, whatever their size
-(e.g. every torchvision SSD/Faster R-CNN detection model exported the same way).
-
-**Decision: flavors are independent classes per engine** (Q4), as described in the brief.
-Each engine package implements its own flavors: load, save, `predict_raw` and the family's
-postprocessing. The engine packages share nothing except the core module.
-
-```
-inference_model_onnxruntime/flavors.py  -> OnnxRuntimeTorchvisionSSD, OnnxRuntimeTorchvisionDetection
-inference_model_openvino/flavors.py     -> OpenVINOTorchvisionSSD, OpenVINOTorchvisionDetection (step 4)
-```
-
-**Preprocessing has one implementation** (design review, point 3):
-`InferenceModelBase.preprocess()` defaults to `preprocess_model_input()`, which is driven by
-`PreprocessingInfo`. Exporters use the same function for quantization calibration, so
-calibration always sees the inputs the model sees at inference. Flavors override `preprocess()`
-only for a stated reason.
-
-Postprocessing is duplicated per engine. We accept that in return for engine repos that are
-fully self-contained. Two things keep it in check:
-
-- The core module provides **optional, engine-agnostic helpers**: NMS and per-class candidate
-  selection (`detection.py`, matching torchvision's semantics), label mapping, and box conversion
-  to normalized Hafnia primitives (`primitives.py`). A flavor's `postprocess` is then about
-  15 lines.
-- **Cross-engine parity tests** check that the ORT and OpenVINO flavors of the same family
-  return the same primitives for the same bundle. That catches the two copies drifting apart.
-
-Constraint: **flavors and core helpers must not depend on torch.** An OpenVINO serving image
-shouldn't need PyTorch. Pre/post-processing uses NumPy (and OpenCV/Pillow for resizing).
-
-### 3.5 Dispatch: `inference_model_from_path()`
+### 3.5 Loading: `inference_model_from_path()`
 
 ```python
-model = inference_model_from_path("ssdlite320_onnx.zip")                                  # bundle's default engine
-model = inference_model_from_path("ssdlite320_onnx.zip", inference_engine="openvino")     # same ONNX file on OpenVINO
-model = inference_model_from_path("ssdlite320_onnx.zip", postprocessing_params={"score_threshold": 0.5}, device="CPU")
+model = inference_model_from_path("ssdlite320_onnx.zip")  # default engines
+model = inference_model_from_path("ssdlite320_onnx.zip", inference_engine="openvino")  # ONNX network on OpenVINO
+model = inference_model_from_path("ssdlite320_onnx.zip", params={"score_threshold": 0.5}, device="CPU")
 primitives = model.predict(image)
 ```
 
-1. Read only `model_info.json` from the zip or directory.
-2. Build the registry key `(inference_engine, framework, decoder)`. The engine is the caller's
-   `inference_engine`, or else the bundle's `runtime.inference_engine`, which is only a
-   **default** (design review, point 2).
-3. Look up the flavor class and check that it supports the bundle's `model_format`
-   (`supported_formats`, e.g. `("onnx", "openvino")` for OpenVINO).
-4. Call `FlavorClass.load_model(path, postprocessing_params=..., **engine_options)`.
-5. If nothing matches, raise a clear error that names the key and the installed flavors.
+There is **one** inference model class for all bundles, `GraphInferenceModel`. It feeds the image
+as graph input `image` and returns the graph output `predictions`.
 
-Registry mechanics: flavors register with the `@register_flavor` class decorator when their
-module is imported. Modules are imported through the **entry point** group
-`hafnia.inference_models`, which `pyproject.toml` already uses for the in-repo ONNX Runtime
-flavors. Installing a separate `inference-model-openvino` package later makes its flavors
-discoverable with no central list to edit.
+Load-time settings, none of them stored in the bundle:
 
-Two kinds of load-time settings, neither stored in the bundle:
+- **`inference_engine`**: every component with an implementation on that engine runs on it, the
+  others on their default engine. It is an error if no component can.
+- **`params`**: overrides of component parameters. `{"score_threshold": 0.5}` applies to every
+  component that has the parameter, `{"nms.score_threshold": 0.5}` to one. They are validated by
+  the component's typed parameter model, and an unknown name is an error.
+- **`device`, `num_threads`** for all engines, and **`engine_options`** per engine, e.g.
+  `{"openvino": {"performance_hint": "LATENCY"}}`.
 
-- **Engine options** such as `device` (`CPU`/`GPU`/`NPU`/`AUTO`) and number of threads. The same
-  bundle should run on different hardware.
-- **Postprocessing overrides** such as `score_threshold`. The model info holds the defaults.
-  Each flavor validates the merged parameters with a typed pydantic model (`params_model`), so a
-  misspelled parameter is an error rather than silently ignored.
+### 3.6 Conversion
+
+A bundle is converted **component by component** with one generic function:
+
+```python
+convert_bundle(path_source, path_bundle, target="onnx")
+convert_bundle(path_source, path_bundle, target="openvino", options={"precision": "fp16"})
+convert_bundle(path_source, path_bundle, target="openvino_int8", calibration_inputs=[{"image": path}, ...])
+```
+
+- Every component that lists the target in its `conversions` is converted. All others are copied
+  unchanged, so NumPy processing stays next to a converted network.
+- **The bundle says what is possible and how.** `conversions` holds the component's export
+  options per target: the ONNX opset and whether the batch axis is dynamic, or the graph nodes to
+  keep in floating point when quantizing. `supported: false` with a `reason` marks a component that
+  can't be converted, e.g. to INT8. Options passed to `convert_bundle` override the stored ones.
+- **Converters** turn components of one runtime into a target. They register with
+  `@register_converter` and through the entry point group `hafnia.inference_model_converters`
+  (`<source runtime>/<target>`):
+
+  | Converter | Where |
+  |---|---|
+  | torch → `onnx` | `inference_model_torch/convert.py`, calling the torch component's `export_onnx` |
+  | onnx → `openvino` (FP32 or FP16) | `inference_model_openvino/convert.py` |
+  | onnx, openvino → `openvino_int8` | `inference_model_openvino/convert.py` (NNCF) |
+
+- **Chains are found automatically**: a torch bundle converts to `openvino_int8` through
+  torch → onnx → openvino_int8, as long as the component lists every step.
+- **Calibration is generic.** For targets that calibrate, the caller passes graph inputs of
+  representative samples. Each converted component gets what it gets at inference: the samples are
+  run through the source graph up to that component. No model specific calibration code exists.
+- A converted component keeps the conversions that still apply (an ONNX network keeps `openvino`
+  and `openvino_int8`, an FP32 IR network `openvino_int8`, an INT8 network none) and records its
+  parent in `provenance`.
 
 ---
 
-## 4. The `InferenceModel` interface
+## 4. Interfaces
 
-### 4.1 Corrections to the brief
-
-The descriptions of `write_model` and `load_model` look swapped in the brief. Proposed meaning:
-
-| Method | Kind | Purpose |
-|---|---|---|
-| `load_model(path, **runtime_options)` | classmethod | Bundle (zip or dir) → ready-to-run instance |
-| `write_model(path)` | instance | Instance → bundle (zip or dir) |
-| `predict_raw(inputs)` | instance | Engine-native tensors in → engine-native tensors out. No pre/post-processing. |
-| `predict_raw_batch(inputs)` | instance | Same, for a batch (see 4.3) |
-| `predict(image, sample_dict=None)` | instance | Image → `List[Primitive]` |
-| `predict_batch(images, sample_dicts=None)` | instance | Images → `List[List[Primitive]]` |
-| `get_model_info()` | instance | Returns **`ModelInfo`** (which contains `tasks: List[TaskInfo]`) |
-
-`get_model_info` should keep returning `ModelInfo`, as the Hafnia method does today. Returning
-only `List[TaskInfo]` would break `run_inference_on_dataset`, which calls
-`model.get_model_info().tasks`.
-
-### 4.2 Shape of the base class
-
-Implemented in `src/inference_model_core/inference_model.py` as `InferenceModelBase`. It
-**extends** Hafnia's `InferenceModel`, so `hafnia.dataset.benchmark` keeps working unchanged.
-`predict` / `predict_batch` are fixed template methods. Pre- and post-processing work on
-**one image at a time**. Only the engine call is batched:
+All in `src/inference_model_core`.
 
 ```python
-RawTensors = Dict[str, np.ndarray]  # keyed by graph input/output name
+class Component(ABC):                       # component.py
+    type: ClassVar[str]; runtime: ClassVar[str]; engine: ClassVar[str]
+    params_model: ClassVar[Type[BaseModel]]             # typed parameters
+    input_ports, optional_input_ports, output_ports     # checked against the component info
 
-class InferenceModelBase(hafnia.InferenceModel):
-    inference_engine: ClassVar[str]   # flavor key, used by @register_flavor
-    framework: ClassVar[str]          # framework and decoder are checked against the model info
-    decoder: ClassVar[str]
-    supported_formats: ClassVar[Tuple[str, ...]]   # bundle formats the engine can load
-    params_model: ClassVar[Type[BaseModel]]        # typed decoder parameters
-    model_info: ModelBundleInfo
-    params: BaseModel   # model info defaults merged with load-time 'postprocessing_params'
-
-    # --- storage -----------------------------------------------------------
     @classmethod
-    @abstractmethod
-    def load_model(cls, path_bundle, postprocessing_params=None, **engine_options) -> Self: ...
-    @abstractmethod
+    def load(cls, info, model_info, path_dir, options) -> Self: ...   # read files of the bundle
+    def files(self) -> Dict[str, FileSource]: ...                     # for writing the bundle
+    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]: ...      # port -> value
+    @classmethod
+    def create_info(cls, name, inputs, outputs, params=None, ...) -> ComponentInfo: ...
+
+class ModelGraph:                           # graph.py
+    @classmethod
+    def load(cls, path_bundle, inference_engine=None, params=None, device="CPU", num_threads=None,
+             engine_options=None, outputs=None) -> ModelGraph: ...
+    def write(self, path_bundle, overwrite=False) -> Path: ...
+    def run(self, inputs, outputs=None) -> Dict[str, Any]: ...                        # one sample
+    def run_batch(self, inputs, outputs=None, timings=None) -> Dict[str, List[Any]]: ...
+
+class GraphInferenceModel(hafnia.InferenceModel):   # inference_model.py
+    def predict(self, image, sample_dict=None) -> List[Primitive]: ...
+    def predict_batch(self, images, sample_dicts=None) -> List[List[Primitive]]: ...
+    def get_model_info(self) -> ModelBundleInfo: ...
     def write_model(self, path_bundle, overwrite=False) -> Path: ...
 
-    # --- engine part (implemented by each flavor) ---------------------------
-    @abstractmethod
-    def predict_raw(self, inputs: RawTensors) -> RawTensors: ...        # one image
-    def predict_raw_batch(self, inputs: RawTensors) -> RawTensors: ...  # batch on axis 0, default: predict_raw
-    def supports_batching(self) -> bool: ...  # default: rank-4 input with dynamic axis 0
-
-    # --- model-family part --------------------------------------------------
-    def preprocess(self, image: ImageType) -> Tuple[RawTensors, PreprocessMeta]: ...  # default: preprocess_model_input
-    @abstractmethod
-    def postprocess(self, outputs: RawTensors, meta: PreprocessMeta) -> List[Primitive]: ...
-    def collate_raw_inputs(self, inputs: List[RawTensors]) -> RawTensors: ...                # concat on axis 0
-    def split_raw_outputs(self, outputs: RawTensors, batch_size: int) -> List[RawTensors]: ...  # slice axis 0
-
-    # --- fixed pipeline ----------------------------------------------------
-    def predict(self, image, sample_dict=None):
-        inputs, meta = self.preprocess(image)
-        return self.postprocess(self.predict_raw(inputs), meta)
-
-    def predict_batch(self, images, sample_dicts=None):
-        # preprocess each image -> if supports_batching(): collate, predict_raw_batch, split
-        #                       -> else: predict_raw per image
-        # -> postprocess each image
-        ...
-
-    def get_model_info(self) -> ModelBundleInfo:
-        return self.model_info
+def convert_bundle(path_source_bundle, path_bundle, target, options=None, calibration_inputs=None,
+                   provenance=None, overwrite=False) -> Path: ...                     # convert.py
+Converter = Callable[[ConversionRequest], ComponentInfo]
 ```
 
-Why per-image pre/post-processing: the input and output tensors of a single image depend on the
-graph. For example, torchvision detection takes a rank-3 `[3, H, W]` input and returns
-`[N, 4]` boxes with no batch axis. Keeping pre/post-processing per image means
-`postprocess` always sees exactly what `predict_raw` returns for one image, whether or not the
-engine call was batched. The base class guarantees that `split_raw_outputs` gives the same shapes
-as a single-image `predict_raw` call.
+- `GraphInferenceModel` **extends** Hafnia's `InferenceModel`, so `hafnia.dataset.benchmark` works
+  unchanged. `get_model_info()` returns a `ModelInfo` (with `tasks`), as Hafnia expects.
+- `ModelGraph` is the general interface: any inputs and outputs. `GraphInferenceModel` requires
+  the input `image` and an output `predictions`.
+- `NetworkComponent` (`network.py`) is the base class of file-based networks: it checks the ports
+  against the tensors, keeps the files for writing, and compares the model info with the stored
+  graph at load time. `TorchNetworkComponent` (`inference_model_torch/component.py`) is the base
+  class of torch networks: device handling, NumPy ↔ tensors, and the `export_onnx` hook.
+- A converter gets a `ConversionRequest` (the component, its files, the merged options, a
+  calibration feed) and returns the component info of the converted component, with the same name
+  and data keys.
 
-Because the pipeline is split into explicit stages, **the benchmark can time each stage
-separately** (pre / inference / post) by calling the stages itself, without the flavor doing
-anything extra.
-
-### 4.3 "Native tensors" and batching
-
-- "Native" means different things per engine (`ov.Tensor`, ORT `OrtValue`, CUDA buffers for
-  TensorRT). For ONNX Runtime and OpenVINO, **`Dict[str, np.ndarray]` keyed by graph
-  input/output name** is accepted directly by both and is easy to test against each other.
-  We use that as the raw contract now, and revisit when TensorRT needs zero-copy device
-  buffers.
-- Batching depends on the exported graph. `supports_batching()` is true by default only for a
-  rank-4 input with a dynamic batch axis. Static batch=1 graphs and torchvision detection
-  (rank-3 input) fall back to one `predict_raw` call per image. Flavors can override it.
-- Images in a batch have different sizes. Pre-processing resizes each image to the model
-  input size before they are concatenated. The per-image `PreprocessMeta` keeps the original
-  size, scale and padding for post-processing.
+"Native" tensors: components exchange **NumPy arrays**. ONNX Runtime and OpenVINO accept them
+directly, torch components convert at their boundary. Zero-copy device buffers (TensorRT, torch
+components next to each other on a GPU) are a later optimisation.
 
 ---
 
-## 5. Proposed `ModelInfo` / `TaskInfo` changes
+## 5. Model info schema
 
-> Implemented as `ModelBundleInfo(ModelInfo)` in `src/inference_model_core/model_info.py`. Unlike the sketch below, `framework` and `runtime` are **required** there, since every bundle must be loadable by a flavor. The flavor key is `ModelBundleInfo.flavor_key()`.
-
-Recommendation: keep `ModelInfo` backward compatible and add a nested, optional `runtime`
-section. Identity fields stay at the top. Everything an export rewrites lives in `runtime`,
-so an ONNX → OpenVINO export copies the model info and replaces only `runtime`.
+Implemented as `ModelBundleInfo(ModelInfo)` in `src/inference_model_core/model_info.py`, format
+version `2.0.0`. A bundle of another major version is rejected with a message to create it again.
 
 ```python
-class ResizeInfo(BaseModel):
-    mode: Literal["stretch", "letterbox", "keep_ratio_pad", "none"]
-    height: Optional[int] = None          # None -> taken from input shape
-    width: Optional[int] = None
-    interpolation: Literal["linear", "nearest", "cubic"] = "linear"
-    pad_value: float = 0.0
+class ConversionInfo(BaseModel):
+    supported: bool = True
+    reason: Optional[str] = None  # why it is not supported
+    options: Dict[str, Any] = {}  # export options of this component for the target
 
-class PreprocessingInfo(BaseModel):
-    color_order: Literal["RGB", "BGR"] = "RGB"
-    resize: Optional[ResizeInfo] = None
-    scale: Optional[float] = 1 / 255      # pixel multiplier before normalization
-    mean: Optional[List[float]] = None
-    std: Optional[List[float]] = None
-    layout: Literal["NCHW", "NHWC"] = "NCHW"
-    dtype: Literal["float32", "float16", "uint8"] = "float32"
-    in_graph: List[str] = []              # steps already performed inside the model graph
 
-class PostprocessingInfo(BaseModel):
-    decoder: str                          # selects code, e.g. "torchvision_detection"
-    params: Dict[str, Any] = {}           # thresholds, NMS, output names, box format, ...
+class ComponentInfo(BaseModel):
+    name: str  # lower case identifier
+    type: str
+    runtime: str
+    inputs: Dict[str, str]  # port -> data key
+    outputs: Dict[str, str]
+    params: Dict[str, Any] = {}
+    files: List[str] = []
+    batched: bool = False
+    conversions: Dict[str, ConversionInfo] = {}
+    provenance: Optional[Dict[str, Any]] = None
 
-class TensorInfo(BaseModel):
-    name: str
-    shape: List[Optional[int]]            # None = dynamic dimension
-    dtype: str
 
-class InputInfo(BaseModel):
-    modality: Literal["image", "video"] = "image"
-    tensors: List[TensorInfo]
+class GraphInfo(BaseModel):
+    inputs: List[str]  # e.g. ["image"]
+    outputs: List[str]  # e.g. ["predictions"]
+    components: List[ComponentInfo]  # in execution order
 
-class RuntimeInfo(BaseModel):
-    model_format: Literal["onnx", "openvino", "pt2", "tensorrt"]
-    inference_engine: Literal["onnxruntime", "openvino", "tensorrt", "torch"]
-    file_path: str                        # relative to bundle root, e.g. "model.xml"
-    extra_files: List[str] = []           # e.g. ["model.bin"]
+
+class ModelBundleInfo(ModelInfo):  # hafnia's name, tasks, version, description, ...
+    format_version: str = "2.0.0"
+    framework: str  # where the model comes from: 'torchvision', 'rfdetr'
+    variant: Optional[str] = None
+    graph: GraphInfo
+
+
+class NetworkParams(BaseModel):  # 'params' of 'network' components
     precision: Literal["fp32", "fp16", "int8"] = "fp32"
-    input: InputInfo
-    outputs: List[TensorInfo] = []
-    preprocessing: PreprocessingInfo
-    postprocessing: PostprocessingInfo
-    provenance: Optional[Dict[str, Any]] = None   # parent bundle hash, tool versions, quantization cfg
-
-class ModelInfo(TasksInfo):                       # existing class, extended
-    # existing: name, version, description, reference_*, meta, tasks
-    format_version: str = "1.0.0"
-    framework: Optional[str] = None               # "torchvision", "rfdetr", ...
-    variant: Optional[str] = None                 # "nano", "large", "ssdlite320_mobilenet_v3_large"
-    runtime: Optional[RuntimeInfo] = None
+    input_tensors: List[TensorInfo]  # name, shape (None = dynamic), dtype
+    output_tensors: List[TensorInfo]
 ```
 
-The `model_info.json` that `scripts/export_to_onnx.py` writes for SSDLite320
-(network-only export, shortened):
+The network component of an SSDLite320 ONNX bundle:
 
 ```json
 {
-  "format_version": "1.0.0",
-  "name": "ssdlite320_mobilenet_v3_large",
-  "framework": "torchvision",
-  "variant": "ssdlite320_mobilenet_v3_large",
-  "tasks": [{"primitive": "Bbox", "name": "object_detection", "classes": [{"name": "person"}, {"name": "bicycle"}, "... 80 classes"]}],
-  "runtime": {
-    "model_format": "onnx",
-    "inference_engine": "onnxruntime",
-    "file_path": "model.onnx",
-    "extra_files": [],
-    "precision": "fp32",
-    "input": {"modality": "image", "tensors": [{"name": "images", "shape": [null, 3, 320, 320], "dtype": "float32"}]},
-    "outputs": [
-      {"name": "boxes", "shape": [null, 3234, 4], "dtype": "float32"},
-      {"name": "scores", "shape": [null, 3234, 91], "dtype": "float32"}
-    ],
-    "preprocessing": {
-      "color_order": "RGB",
-      "resize": {"mode": "stretch", "height": 320, "width": 320, "interpolation": "linear", "pad_value": 0.0},
-      "scale": 0.00392156862745098, "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5],
-      "layout": "NCHW", "dtype": "float32", "in_graph": []
+    "name": "network", "type": "network", "runtime": "onnx", "batched": true,
+    "inputs": {"images": "input_tensor"},
+    "outputs": {"boxes": "anchor_boxes", "scores": "anchor_scores"},
+    "files": ["network/model.onnx"],
+    "params": {
+        "precision": "fp32",
+        "input_tensors": [{"name": "images", "shape": [null, 3, 320, 320], "dtype": "float32"}],
+        "output_tensors": [{"name": "boxes", "shape": [null, 3234, 4], "dtype": "float32"},
+                           {"name": "scores", "shape": [null, 3234, 91], "dtype": "float32"}]
     },
-    "postprocessing": {
-      "decoder": "anchor_boxes_nms",
-      "params": {"score_threshold": 0.001, "nms_iou_threshold": 0.55, "topk_candidates": 300, "max_detections": 300,
-                 "background_index": 0}
-    },
-    "quantization_hints": {"ignored_node_patterns": ["/(?!backbone/|head/).*"]},
-    "provenance": {"exporter": "model_exporters.torchvision_detection", "torch": "2.10.0+cu128",
-                   "torchvision": "0.25.0+cu128", "opset_version": 17}
-  }
+    "conversions": {
+        "openvino": {"supported": true, "reason": null, "options": {}},
+        "openvino_int8": {"supported": true, "reason": null,
+                          "options": {"ignored_node_patterns": ["/(?!backbone/|head/).*"]}}
+    }
 }
 ```
 
-The Faster R-CNN bundle differs: input `image` `[3, null, null]` with
-`in_graph: ["resize", "normalize"]`, outputs `boxes`/`scores`/`labels` per detection, and decoder
-`boxes_scores_labels` with `score_threshold` only.
+`framework` and `variant` are informational: nothing dispatches on them any more.
 
 ### TaskInfo
 
-`TaskInfo` mostly works as it is. One real problem shows up when describing **model outputs**:
+`TaskInfo` works as it is, with **one task class per model label** (decided on 2026-11-19).
+`TaskInfo` requires unique class names, and the position in `classes` is the class index. Real
+models' labels don't line up with that: torchvision COCO models emit 91 labels including
+`__background__` and repeated `"N/A"` placeholders, RF-DETR emits `num_classes + 1` with "no
+object" last.
 
-- `TaskInfo` requires **unique** class names, and the position in `classes` *is* the class
-  index.
-- Real models' output indices often don't line up with that. torchvision COCO models emit 91
-  indices including `__background__` and repeated `"N/A"` placeholders. RF-DETR emits
-  `num_classes + 1` with background last.
+The bundle helpers put every model label in the task, with unique placeholder names for labels
+without a class: `NotDefined_000`, `NotDefined_012`, ..., the convention of
+trainer-object-detection's archives (`model_exporters/class_names.py`). Label = class index, so no
+mapping is needed at inference. COCO models (SSD, Faster R-CNN, RF-DETR) carry the same 91-class
+task, and trainer archives pass through unchanged. `detections_to_bboxes` only drops labels beyond
+the task's classes (`task_label_mask`, for RF-DETR's "no object" column).
 
-Options:
-
-- **(a, recommended)** Keep `TaskInfo` clean (only real classes) and put the
-  output-index → class mapping in `postprocessing.params` (e.g. `label_to_class_idx` or
-  `ignore_labels` + `label_offset`). That is a decoder concern, not a task concern.
-- (b) Add an optional `output_index` to `ClassInfo`.
-
-Option (a) needs no change to `TaskInfo` itself. Other `TaskInfo` additions don't look
-necessary for v1.
-
-**Changed on 2026-11-19: one task class per model label** (option (c), without a mapping).
-Exporters now put every model label in the task, with unique placeholder names for labels
-without a class: `NotDefined_000`, `NotDefined_012`, ..., the convention of trainer-object-detection's
-archives (`model_exporters/class_names.py`). Label = class index, so `label_to_class_idx` is
-gone. COCO models (SSD, Faster R-CNN, RF-DETR) carry the same 91-class task, and trainer archives
-pass through unchanged. The decoders only drop labels beyond the task's classes
-(`task_label_mask`, for RF-DETR's "no object" column).
-
-The cost is in evaluation: Hafnia's metrics require the prediction task's class names to equal
-the ground truth's, in order. `package_openvino/metrics.py` aligns the predictions to the
-dataset's classes by name before computing metrics (`align_prediction_classes`, and a
-`run_benchmark` wrapper), removing predictions of other classes. It raises when the dataset has
-classes the model doesn't, since then the label spaces differ and a class mapping is needed.
-A cleaner long-term fix is upstream in hafnia: let the metrics ignore prediction classes the
-ground truth doesn't have.
+The cost is in evaluation: Hafnia's metrics require the prediction task's class names to equal the
+ground truth's, in order. `package_openvino/metrics.py` aligns the predictions to the dataset's
+classes by name before computing metrics (`align_prediction_classes`, and a `run_benchmark`
+wrapper), removing predictions of other classes. It raises when the dataset has classes the model
+doesn't, since then the label spaces differ and a class mapping is needed. A cleaner long-term fix
+is upstream in hafnia: let the metrics ignore prediction classes the ground truth doesn't have.
 
 ### Where should the change live?
 
-Options: change `ModelInfo` in `../hafnia` now, or define the extension in this package first
-(e.g. a `ModelBundleInfo(ModelInfo)` subclass in the core module) and upstream it once it has
-settled. I recommend the second: it avoids a Hafnia release for every schema iteration, and
-the brief asks to keep the concepts in modules that can move later. Decision (Q5): package first, nested `runtime`.
+The extension lives in this package first (`ModelBundleInfo(ModelInfo)` in the core module) and
+goes upstream to `../hafnia` once it has settled. That avoids a Hafnia release for every schema
+iteration (Q5).
 
 ---
 
@@ -484,368 +428,307 @@ module later moves to its own repo, import paths stay the same.
 
 ```
 package-openvino/
-├── pyproject.toml            # hatch: packages = [all src/* below]; entry points for flavors
+├── pyproject.toml            # hatch: packages = [all src/* below]; entry points for components and converters
 ├── Dockerfile                # same pattern as trainer-object-detection
 ├── .hafniaignore  .python-version  README.md
-├── docs/design.md            # this document (+ design_review.md)
+├── docs/design.md            # this document (+ design_review.md, a review of the flavor design)
 ├── src/
-│   ├── inference_model_core/        # → later: hafnia                                        [done]
-│   │   ├── model_info.py            #   ModelInfo extension, RuntimeInfo, ...
+│   ├── inference_model_core/        # → later: hafnia
+│   │   ├── model_info.py            #   ModelBundleInfo, GraphInfo, ComponentInfo, ConversionInfo
 │   │   ├── bundle.py                #   read/write zip|dir, model_info.json I/O
-│   │   ├── inference_model.py       #   InferenceModelBase (template pipeline, default preprocess)
-│   │   ├── registry.py              #   register_flavor, inference_model_from_path
-│   │   ├── preprocessing.py         #   preprocess_model_input: the one preprocessing implementation
-│   │   ├── detection.py             #   optional helper: NMS, per-class selection, label mapping
-│   │   └── primitives.py            #   optional helper: pixel boxes -> normalized Hafnia primitives
-│   ├── inference_model_onnxruntime/ # → later: inference-model-onnx-runtime repo             [done]
-│   │   ├── engine.py                #   OnnxRuntimeModel: load/save/predict_raw
-│   │   └── flavors.py               #   OnnxRuntimeTorchvisionSSD, OnnxRuntimeTorchvisionDetection
-│   ├── inference_model_openvino/    # → later: inference-model-openvino repo                 [done]
-│   │   ├── engine.py / flavors.py   #   OpenVINO flavors (load ONNX and IR bundles)
-│   │   ├── export_onnx.py           #   generic ONNX bundle → OpenVINO bundle
-│   │   ├── quantize.py              #   NNCF PTQ with model info driven calibration          [done]
-│   │   └── rt_info.py               #   ModelInfo → OpenVINO Model API rt_info               [later]
-│   ├── model_exporters/             # model → ONNX bundle (torch/rfdetr live only here)      [done]
-│   │   ├── registry.py              #   pretrained name or trainer archive → exporter
+│   │   ├── component.py             #   Component base class, registry, load options
+│   │   ├── network.py               #   NetworkComponent: base class of file-based networks
+│   │   ├── graph.py                 #   ModelGraph: load, write, run, run_batch
+│   │   ├── inference_model.py       #   GraphInferenceModel, inference_model_from_path
+│   │   ├── convert.py               #   convert_bundle, converter registry
+│   │   ├── components/              #   standard NumPy components (image, detection, classification)
+│   │   ├── preprocessing.py         #   functions: load, resize, image to tensor, ImageTransform
+│   │   ├── detection.py             #   functions: NMS, per-class selection, query top-k
+│   │   ├── classification.py        #   functions: softmax, top-1
+│   │   └── primitives.py            #   functions: pixel boxes -> normalized Hafnia primitives
+│   ├── inference_model_onnxruntime/ # → later: inference-model-onnx-runtime repo
+│   │   └── components.py            #   'network' on (onnx, onnxruntime)
+│   ├── inference_model_openvino/    # → later: inference-model-openvino repo
+│   │   ├── components.py            #   'network' on (onnx, openvino) and (openvino, openvino)
+│   │   └── convert.py               #   converters to OpenVINO IR: FP32, FP16, INT8 (NNCF)
+│   ├── inference_model_torch/       # torch runtime
+│   │   ├── component.py             #   TorchNetworkComponent: base class of torch networks
+│   │   ├── convert.py               #   converter torch -> ONNX
+│   │   └── onnx_export.py           #   shared ONNX export settings
+│   ├── model_exporters/             # model families: torch components and bundle helpers
+│   │   ├── registry.py              #   pretrained name or trainer archive → bundle helper
 │   │   ├── trainer_archive.py       #   trainer model archives (model_config.json + weights)
+│   │   ├── class_names.py           #   one task class per model label, placeholder names
 │   │   ├── torchvision_detection.py
 │   │   ├── torchvision_classification.py
 │   │   └── rfdetr_detection.py
 │   └── package_openvino/            # glue that stays in the trainer: benchmarking, platform helpers
-│       ├── class_mapping.py         #   class mappings as data (JSON file or inline JSON)    [done]
-│       ├── latency.py               #   latency per stage: preprocess, model, postprocess    [done]
-│       └── platform.py              #   checkpoint discovery, dataset loading                [done]
+│       ├── class_mapping.py         #   class mappings as data (JSON file or inline JSON)
+│       ├── latency.py               #   latency per component
+│       ├── metrics.py               #   Hafnia's benchmark with prediction classes aligned by name
+│       └── platform.py              #   checkpoint discovery, dataset loading
 ├── scripts/
-│   ├── export_to_onnx.py           # any supported model: trainer archive or pretrained name
+│   ├── export_to_onnx.py            # any supported model: trainer archive or pretrained name
 │   ├── export_onnx_to_openvino.py
 │   └── benchmark.py
 ├── examples/
-│   ├── example_inference_model.py   # basic flow: export, run on ORT, convert, run on OpenVINO, draw, benchmark
-│   └── example_compare_models.py    # models x engines/formats: mAP + latency table
+│   ├── example_inference_model.py   # basic flow: bundle, ONNX, run, convert, run on OpenVINO, draw, benchmark
+│   └── example_compare_models.py    # models x networks/engines: mAP + latency table
 └── tests/                       # one folder per module under src/, shared helpers at the root
-    ├── conftest.py                  # session fixtures: micro dataset, exported ONNX and OpenVINO bundles
-    ├── helpers.py                   # dummy flavor, detection matching
+    ├── conftest.py                  # session fixtures: micro dataset, torch, ONNX and OpenVINO bundles
+    ├── helpers.py                   # dummy network component, detection matching
     ├── micro_datasets.py            # creates tests/data/micro-* from the Hafnia platform (8 COCO images)
     ├── data/micro-coco-2017/
-    ├── inference_model_core/        # test_bundle, test_detection, test_inference_model, test_model_info, ...
-    ├── inference_model_onnxruntime/ # test_onnxruntime_flavors
-    ├── inference_model_openvino/    # test_export_onnx, test_openvino_flavors (parity with ONNX Runtime)
-    ├── model_exporters/             # test_torchvision_detection (parity with torch)
-    └── package_openvino/            # test_platform
+    ├── inference_model_core/        # test_model_info, test_graph, test_components, test_convert, ...
+    ├── inference_model_onnxruntime/ # test_onnxruntime_components
+    ├── inference_model_openvino/    # test_openvino_components (parity with ONNX Runtime), test_openvino_convert
+    ├── model_exporters/             # parity with the original torch models, per family
+    ├── package_openvino/            # test_latency, test_metrics, test_platform, test_class_mapping
+    └── scripts/                     # test_benchmark_script
 ```
 
-Test file names are unique across folders: the folders have no `__init__.py` (a `tests/inference_model_core`
-package would shadow the real one), so pytest imports test files by their base name.
+Test file names are unique across folders: the folders have no `__init__.py` (a
+`tests/inference_model_core` package would shadow the real one), so pytest imports test files by
+their base name.
 
-Dependency rules (worth enforcing with a test or lint rule):
+Dependency rules:
 
 - `inference_model_core` imports **no** engine and **no** torch.
 - Engine packages import `inference_model_core`, never each other.
-  `inference_model_openvino.export_onnx` reads ONNX with OpenVINO itself, not through ONNX
-  Runtime.
-- `model_exporters` is the only place torch/torchvision is imported.
-- Use optional dependency groups (`[project.optional-dependencies] openvino = [...]`,
-  `onnxruntime = [...]`, `torch = [...]`) to keep each split honest even inside one repo.
+  `inference_model_openvino.convert` reads ONNX with OpenVINO itself, not through ONNX Runtime.
+- torch is imported only by `inference_model_torch` and `model_exporters`, and those only when a
+  bundle with a torch component is loaded or created.
+- Optional dependency groups (`onnxruntime`, `openvino`, `torch`, `rfdetr`) keep each split honest
+  inside one repo.
 
 ---
 
-## 7. End-to-end flow (v1)
+## 7. End-to-end flow
 
 ```mermaid
 flowchart LR
-    A[pretrained model or<br/>trainer archive] -->|export_to_onnx.py| B[ONNX bundle<br/>model.onnx + model_info.json]
-    B -->|inference_model_from_path| C[OnnxRuntimeTorchvisionSSD /<br/>OnnxRuntimeTorchvisionDetection]
-    B -->|export_onnx_to_openvino.py<br/>optional --quantize| D[OpenVINO bundle<br/>model.xml/.bin + model_info.json]
-    D -->|inference_model_from_path| E[OpenVINOTorchvisionSSD /<br/>OpenVINOTorchvisionDetection]
-    B -.->|inference_engine='openvino'| E
-    C --> F[benchmark.py<br/>latency + accuracy]
-    E --> F
+    A[pretrained model or<br/>trainer archive] -->|bundle helper| T[torch bundle<br/>weights + model_info.json]
+    T -->|convert_bundle 'onnx'| B[ONNX bundle]
+    B -->|convert_bundle 'openvino'<br/>FP32 / FP16| D[OpenVINO bundle]
+    B -->|convert_bundle 'openvino_int8'<br/>+ calibration inputs| Q[OpenVINO INT8 bundle]
+    T -->|inference_model_from_path| M[GraphInferenceModel]
+    B --> M
+    D --> M
+    Q --> M
+    M --> F[benchmark.py<br/>accuracy + latency per component]
     F --> G[HafniaLogger metrics<br/>predictions dataset]
 ```
 
-The ONNX Runtime path is the **reference**. Comparing ORT vs OpenVINO FP32 vs OpenVINO INT8
-on the same dataset is the main way to confirm that export and quantization didn't break the
-model.
+Only the network component changes along the way. `scripts/export_to_onnx.py` does the first two
+arrows, `scripts/export_onnx_to_openvino.py` the conversions to OpenVINO.
+
+The ONNX Runtime path is the **reference**. Comparing ORT vs OpenVINO FP32 vs OpenVINO INT8 on the
+same dataset is the main way to confirm that conversion and quantization didn't break the model.
 
 ---
 
-## 8. Scripts
+## 8. Model families and scripts
 
 All scripts follow the trainer conventions: `cyclopts` CLI, `HafniaLogger`, input bundle taken
 from the checkpoint dir when present (otherwise a `--model-path`), output written to
 `logger.path_model()`, `auto_save_command_builder_schema` for the `*.schema.json` files.
 
-### 8.1 `scripts/export_to_onnx.py` (implied by the brief)
+### 8.1 Model families (`model_exporters`)
 
-Implemented: the script plus `model_exporters/torchvision_detection.py`. The library function
-`export_torchvision_detection()` also accepts fine-tuned models.
+Each family module has the torch component of its network and functions that write a bundle with
+that network: `create_torchvision_detection_bundle`, `create_torchvision_classification_bundle`,
+`create_rfdetr_detection_bundle`, plus `create_pretrained_bundle(name)` and
+`create_bundle_from_trainer_archive(path)` in `registry.py`, which pick the family (importing it
+only then, so torchvision models don't need `rfdetr`).
 
-- Input: a pretrained model name: `ssdlite320_mobilenet_v3_large` or
-  `fasterrcnn_mobilenet_v3_large_320_fpn` (Q9).
-- Output: an ONNX bundle in the experiment model folder. Tasks come from
-  `weights.meta["categories"]`, one class per label: `__background__` and the `N/A` labels get
-  unique placeholder names (`NotDefined_000`, ...), see "TaskInfo" in section 5.
-- Both use the TorchScript-based exporter (`dynamo=False`, opset 17).
+| | SSDLite320 | Faster R-CNN 320 | ResNet18 | RF-DETR (Nano to Large) |
+|---|---|---|---|---|
+| Sources | pretrained | pretrained | pretrained, trainer-classification archive | pretrained, trainer-object-detection archive |
+| Graph | load_image → resize → to_tensor → network → nms → to_bboxes | load_image → to_tensor → network → to_bboxes | load_image → resize → to_tensor → network → to_classification | load_image → resize → to_tensor → network → topk → to_bboxes |
+| Network | `images [N, 3, 320, 320]` → `boxes [N, 3234, 4]`, `scores [N, 3234, 91]` | `image [3, H, W]` → `boxes [n, 4]`, `scores [n]`, `labels [n]` | `images [N, 3, S, S]` → `logits [N, C]` | `input [N, 3, R, R]` → `dets [N, 300, 4]`, `labels [N, 300, C+1]` |
+| In the network | backbone, head, anchor box decoding, clipping, softmax | everything incl. resize, normalize, NMS | the model | RF-DETR's own ONNX export |
+| After the network | `anchor_nms`: per-class threshold, top-k, NMS | score threshold | softmax, top-1 | `query_topk`: sigmoid, top-300 over (query, class). No NMS |
+| Resize | stretch, linear | in the network (aspect ratio kept) | stretch, antialiased | stretch, antialiased |
+| Batched | yes | no | yes | yes |
+| Default score threshold | 0.001 (torchvision's) | 0.05, network keeps ≥ 0.001 | 0 | 0.05 (trainer-object-detection's) |
+| INT8 options | float outside `/backbone`, `/head` | float outside backbone, RPN head, box head | none | `model_type: transformer` |
 
-Two export contracts (design review, point 1):
-
-| | SSD (network only) | Faster R-CNN (full graph) |
-|---|---|---|
-| Why | Single-stage. Resize/normalize and NMS can move out of the graph | Two-stage: NMS on proposals inside the network, aspect-ratio preserving resize |
-| Input | `images [N, 3, 320, 320]`, dynamic batch | `image [3, H, W]`, no batch axis |
-| In graph | backbone, head, anchor box decoding, clipping, softmax | everything incl. resize, normalize, NMS |
-| Outputs | `boxes [N, 3234, 4]` (input pixels), `scores [N, 3234, 91]` | `boxes [n, 4]` (input pixels), `scores [n]`, `labels [n]` |
-| Decoder | `anchor_boxes_nms`: per-class threshold, top-k, NMS, max detections | `boxes_scores_labels`: threshold + label mapping |
-| Score threshold | runtime setting only | graph keeps scores ≥ 0.001, runtime threshold on top (default 0.05) |
-| Batching | yes | no (image by image) |
-
-Measured against the original torch models on the micro COCO images in `tests/data`
-(detections matched by IoU and class). The SSD numbers are from the first 3-image micro dataset;
-the tests check the same limits on the current 8 images.
-
-- **SSD, image already 320 × 320** (resize is an identity on both sides): 93 detections
-  ≥ 0.05, worst IoU 1.0000, worst score difference 1.2e-6.
-- **SSD, original image sizes** (OpenCV resize outside the graph vs torch resize in the
-  graph): worst IoU 0.9925, worst score difference 0.008.
-- **Faster R-CNN** (8 images): 65 detections ≥ 0.05, the same on ONNX Runtime and OpenVINO, worst
-  score difference 1.8e-5, no extra detections. Also checked at five input sizes.
-
-**In-graph resize, Faster R-CNN.** torchvision scales by `min(320 / shortest side, 640 / longest
-side)` and floors `side × scale`. Eager torch computes that in double precision, the traced graph
-in float32, where an exact result can drop just below the integer: 400 × 640 resized to 319 × 511
-instead of 320 × 512. The detections then shifted (IoU 0.988, scores off by up to 0.07). Found when
-the micro dataset grew to 8 images. The exporter computes the size in int64 instead
-(`side × 320 // shortest`), which is exact. In rare cases eager torch's own double rounding could
-come out one pixel lower than the exact size.
-
-**Images without proposals, Faster R-CNN.** Blank, uniform and noise frames get no proposals
-from the RPN, so the graph must run with zero boxes. torchvision handles that case in ways
-that don't survive tracing. The exporter swaps in zero-box-safe replacements for the export
-only, with the same arithmetic:
-
-- `BoxCoder.decode` reshapes with `-1` behind a Python `if box_sum > 0`. A reshape of zero boxes
-  to `(0, -1, 4)` is ambiguous, so the graph crashed. The replacement stacks the coordinates
-  to `(boxes, classes, 4)` and has no reshape.
-- `clip_boxes_to_image` ends with `reshape(boxes.shape)`, which the exporter turns into the same
-  kind of ambiguous reshape. ONNX Runtime only got past it through a graph optimisation.
-- `batched_nms` returns `torch.empty((0,))` for zero boxes, an empty constant inside an ONNX
-  `If`. **OpenVINO reads empty constants as scalars**, so it returned one row of uninitialized
-  memory (random box, score and label) instead of nothing. Worth reporting to Intel.
-
-With these, all three (torch, ONNX Runtime, OpenVINO) return nothing on blank and noise images
-and the same detections on the test images, in both directions. Step 3 instead set the RPN score
-threshold to 0, which avoided the crash but produced up to 100 false detections per blank frame
-(scores up to 0.63).
-
-**Latency note (SSD, CPU, ONNX Runtime).** About 3.5 ms preprocessing and 11 ms network.
-Postprocessing takes 86 ms at the torchvision default threshold of 0.001 (about 27k NMS
-candidates), 4.5 ms at 0.05 and 2.7 ms at 0.3. Benchmarks must state the threshold. Accuracy runs
-use a low one, latency runs a serving one.
-
-### 8.1b ResNet18 classification and RF-DETR detection
-
-Added on 2026-11-19, in the current design (network-only graphs, NumPy decoders), before the
-standardized-graph redesign.
-
-| | ResNet18 | RF-DETR (Nano, Small, Medium, Large) |
-|---|---|---|
-| Sources | pretrained ImageNet, trainer-classification archive | pretrained COCO, trainer-object-detection archive |
-| Framework / decoder | `torchvision` / `classification_logits` | `rfdetr` / `rfdetr_detection` |
-| Graph | `images [N, 3, S, S]` → `logits [N, C]` | RF-DETR's own ONNX export: `input [N, 3, R, R]` → `dets [N, 300, 4]` (normalized cx, cy, w, h), `labels [N, 300, C+1]` (logits) |
-| Decoder (NumPy) | softmax, top-1 `Classification` | sigmoid, top-300 over (query, class), box conversion. No NMS |
-| Preprocessing | stretch to S (archive `image_size`), ImageNet mean/std | stretch to R (384 for Nano), the model's mean/std |
-| Default threshold | 0 | 0.05 (trainer-object-detection's) |
-
-- **Trainer archives** (`model_exporters/trainer_archive.py`): a zip with `model_config.json`
-  (model name, task, settings) and the weights it names. Platform checkpoints of both trainers
-  use this format. `scripts/export_to_onnx.py` takes a checkpoint or `--model-path` archive,
-  otherwise a pretrained `--model-name`, and `model_exporters/registry.py` picks the exporter
-  (importing it only then, so torchvision exports don't need `rfdetr`).
-- **`rfdetr` dependency**: optional extra `rfdetr` (`rfdetr==1.8.1`, same torch 2.10.0), used by
-  `model_exporters` only.
-- **Placeholder classes**: RF-DETR's COCO logits use COCO ids (column 0 and 10 ids are unused,
-  `NotDefined_*` in the trainer's archives). They stay task classes under those names, so the task
-  has 91 classes, the same as the torchvision COCO models (see "TaskInfo" in section 5).
-- **Antialiased resize** (`ResizeInfo.antialias`): both trainers resize with torchvision on
+- **Network only where possible** (design review, point 1). SSD is single-stage, so resize,
+  normalize and NMS are components. The score threshold is then a runtime setting and the network
+  batches and quantizes. Faster R-CNN is two-stage with NMS on proposals inside the network and
+  stays the full model, a stress test of the generic parts.
+- **Torch networks are rebuilt by reference.** The bundle stores `model.state_dict()` and the
+  architecture name. torchvision builds detectors with frozen batch norm only when they start
+  from pretrained weights, so the rebuild freezes batch norm when the stored weights have no
+  `num_batches_tracked`. Weights load with `strict=True`.
+- **RF-DETR checkpoints**: RF-DETR unpickles its checkpoints and they carry the optimizer state
+  (366 MB for Nano). The bundle gets a copy with the weights and the plain settings only (122 MB),
+  which reads with `weights_only=True`. The component checks that before RF-DETR loads it.
+- **Trainer archives** (`trainer_archive.py`): a zip with `model_config.json` (model name, task,
+  settings) and the weights it names. Platform checkpoints of both trainers use this format.
+- **`rfdetr` dependency**: optional extra `rfdetr` (`rfdetr==1.8.1`, same torch 2.10.0).
+- **ONNX export**: the TorchScript-based exporter (`dynamo=False`, opset 17), called by each torch
+  component's `export_onnx` with the component's `onnx` options (`opset_version`, and
+  `dynamic_batch` for the batched networks).
+- **Antialiased resize** (`resize_image.antialias`): both trainers resize with torchvision on
   tensors, which antialiases when downscaling. OpenCV's linear resize differed by 2–4 gray levels
-  on average; PIL's bilinear resize matches torchvision within 0.25. Both exporters set it.
-- **Parity with the original models** (micro COCO, 8 images):
-  - ResNet18: same top-1 class on all images; probabilities within 1e-4 when the image is already
-    at the input size, within 0.012 on original sizes (uint8 vs float resize).
-  - RF-DETR Nano: scores within 1e-5 at identity resize. A few low-score boxes move (IoU down to
-    0.97 below score 0.2), boxes from score 0.2 match at IoU ≥ 0.9965. On original sizes all
-    confident detections match. A trainer archive with the pretrained weights gives the same
-    detections as the pretrained export.
-  - OpenVINO vs ONNX Runtime: ResNet18 probabilities within 1e-4. RF-DETR differs in low-score
-    queries (boxes moved by up to 0.4 of the image); detections from score 0.1 match at
-    IoU ≥ 0.99, scores within 0.01.
-- **INT8**: ResNet18 keeps the top-1 class on 7 of 8 images and its network is 2.5× faster
-  (5.3 vs 13.5 ms) on the dev laptop. RF-DETR needed NNCF's transformer mode (new
-  `QuantizationHints.model_type = "transformer"`): the default dropped mAP from 0.66 to 0.0;
-  transformer mode gives 0.668. Keeping the backbone only or the offsets/box heads in float
-  didn't help further. INT8 RF-DETR is slower than FP32 on the dev laptop (163 vs 108 ms network).
-- **Accuracy** (micro COCO, all engines and FP32/FP16): RF-DETR Nano mAP 0.660, mAP@50 0.793.
-- **Found in trainer-classification** (not changed here): `InferenceModelResNet18.predict` puts a
-  numpy image through `v2.Resize`, which leaves numpy arrays unchanged, so inference runs at the
-  original image size, not `image_size`. Training only resizes with `--resize`, while the archive
-  stores `image_size` (224 by default) either way. Our exporter follows the archive's
-  `image_size`, which matches training only when training resized.
+  on average; PIL's bilinear resize matches torchvision within 0.25.
 - Not supported yet: RF-DETR segmentation (`RFDETRSegNano`, masks) and keypoints.
 
-### 8.2 `scripts/export_onnx_to_openvino.py`
+**Parity with the original models** (micro COCO, 8 images, detections matched by IoU and class):
 
-The brief says "to pt2 format", which I read as "to OpenVINO IR".
+- The redesign changed no numbers: the ONNX networks, their inputs and the predictions are
+  bit-identical to the flavor design's on all four families.
+- Torch bundles against the original models: SSD and Faster R-CNN IoU ≥ 0.999 and scores within
+  1e-4, ResNet18 probabilities within 1e-5, RF-DETR scores within 2e-6 on the same device (1e-3
+  between CPU and CUDA).
+- SSD on ONNX Runtime, image already 320 × 320: worst IoU 1.0000, worst score difference 1.2e-6.
+  On original image sizes (OpenCV resize vs torch resize): worst IoU 0.9925, score difference
+  0.008.
+- Faster R-CNN: the same detections on ONNX Runtime and OpenVINO, worst score difference 1.8e-5,
+  no extra detections. Also checked at five input sizes.
+- ResNet18: same top-1 class on all images; probabilities within 1e-4 at the input size, within
+  0.012 on original sizes (uint8 vs float resize).
+- RF-DETR Nano: a few low-score boxes move (IoU down to 0.97 below score 0.2), boxes from score
+  0.2 match at IoU ≥ 0.9965. A trainer archive with the pretrained weights gives the same
+  detections as the pretrained model. mAP 0.660, mAP@50 0.793 on all engines.
+- OpenVINO vs ONNX Runtime: SSD network outputs within 1e-2 px and 1e-4 on scores, ResNet18
+  probabilities within 1e-4. RF-DETR differs in low-score queries (boxes moved by up to 0.4 of the
+  image); detections from score 0.1 match at IoU ≥ 0.99, scores within 0.01.
 
-Implemented in step 4: the script plus `inference_model_openvino/export_onnx.py`
-(`export_onnx_bundle_to_openvino`, and `write_openvino_bundle`, which step 5 reuses for INT8).
+**Resize inside the network, Faster R-CNN.** torchvision scales by `min(320 / shortest side, 640 /
+longest side)` and floors `side × scale`. Eager torch computes that in double precision, the
+traced graph in float32, where an exact result can drop just below the integer: 400 × 640 resized
+to 319 × 511 instead of 320 × 512. The detections then shifted (IoU 0.988, scores off by up to
+0.07). The ONNX export computes the size in int64 instead (`side × 320 // shortest`), which is
+exact.
 
-- Input bundle from the checkpoint dir when present, otherwise `--model-path`
-  (`package_openvino/platform.py`). `--precision fp32|fp16` (default fp32), `--device` for the
-  verification run.
-- The model info is copied. Only the file description in `runtime` changes (format, engine,
-  files, precision). The parent's format, files, precision and provenance are kept under
-  `runtime.provenance.parent`, with the OpenVINO version and `compress_to_fp16`.
-- Weights are compressed to FP16 only for `--precision fp16` (design review 4.2). SSDLite320:
-  `model.bin` is 13.8 MB in FP32 and 6.9 MB in FP16.
-- After conversion, the ONNX bundle and the IR bundle both run on OpenVINO with the same input,
-  and the largest output difference is logged. SSDLite320: 0 in FP32. In FP16, 0.16 px on boxes
-  and 1e-3 on scores.
-- Cross-engine parity (tests): raw SSD outputs ONNX Runtime vs OpenVINO (ONNX and IR) within
-  1e-2 px and 1e-4 on scores. Same primitives in both directions for SSD and Faster R-CNN
-  (IoU ≥ 0.99, score difference ≤ 1e-3), and the same Hafnia benchmark metrics.
-- SSDLite320 network latency on the dev laptop (i7-10875H, CPU, batch 1) is 7–13 ms median for
-  every engine/format combination, within the noise of the machine. Real comparisons come from
-  `benchmark.py` (step 6).
+**Images without proposals, Faster R-CNN.** Blank, uniform and noise frames get no proposals from
+the RPN, so the graph must run with zero boxes. torchvision handles that case in ways that don't
+survive tracing. The ONNX export swaps in zero-box-safe replacements, with the same arithmetic:
+
+- `BoxCoder.decode` reshapes with `-1` behind a Python `if box_sum > 0`. A reshape of zero boxes
+  to `(0, -1, 4)` is ambiguous, so the graph crashed. The replacement stacks the coordinates to
+  `(boxes, classes, 4)` and has no reshape.
+- `clip_boxes_to_image` ends with `reshape(boxes.shape)`, which the exporter turns into the same
+  kind of ambiguous reshape. ONNX Runtime only got past it through a graph optimisation.
+- `batched_nms` returns `torch.empty((0,))` for zero boxes, an empty constant inside an ONNX `If`.
+  **OpenVINO reads empty constants as scalars**, so it returned one row of uninitialized memory
+  (random box, score and label) instead of nothing. Worth reporting to Intel.
+
+With these, torch, ONNX Runtime and OpenVINO return nothing on blank and noise images and the same
+detections on the test images, in both directions.
+
+**Found in trainer-classification** (not changed here): `InferenceModelResNet18.predict` puts a
+numpy image through `v2.Resize`, which leaves numpy arrays unchanged, so inference runs at the
+original image size, not `image_size`. Training only resizes with `--resize`, while the archive
+stores `image_size` (224 by default) either way. Our bundle follows the archive's `image_size`,
+which matches training only when training resized.
+
+### 8.2 `scripts/export_to_onnx.py`
+
+- Input: a checkpoint or `--model-path` trainer archive, otherwise a pretrained `--model-name`.
+- Writes the bundle with the torch network to a temporary folder (the bundle helper), converts it
+  with `convert_bundle(target="onnx", options={"opset_version": ...})` and writes the ONNX bundle
+  to the experiment model folder. The bundle is loaded once to fail here, not downstream.
+
+### 8.3 `scripts/export_onnx_to_openvino.py`
+
+- Input bundle from the checkpoint dir when present, otherwise `--model-path`.
+  `--precision fp32|fp16|int8` (default fp32), `--device` for the verification run.
+- `fp32` / `fp16`: `convert_bundle(target="openvino", options={"precision": ...})`. Weights are
+  compressed to FP16 only when asked (design review 4.2). SSDLite320: `model.bin` is 13.8 MB in
+  FP32 and 6.9 MB in FP16.
+- After conversion, the source and the converted bundle both run on OpenVINO with the same image,
+  and the largest difference of the converted network's outputs is logged. SSDLite320: 0 in FP32.
+  In FP16, 0.16 px on boxes and 1e-3 on scores.
 - Not done yet: static-shape reshape (needed for NPU) and Model API `rt_info`.
 
-**INT8 quantization** (step 5): `--precision int8`, implemented in
-`inference_model_openvino/quantize.py` (`quantize_bundle`).
+**INT8** (`--precision int8`): `convert_bundle(target="openvino_int8", calibration_inputs=...)`,
+NNCF post-training quantization of an FP32 ONNX or IR network.
 
-- NNCF post-training quantization of an FP32 ONNX or IR bundle. Calibration images are
-  preprocessed with `preprocess_model_input`, the same model info driven function as at
-  inference, so no model specific calibration code is needed (design review, point 3).
 - Calibration data as in the trainers: the experiment's dataset on the platform, locally
   `--calibration-dataset name:version` (default `coco-2017:1.0.0`) or a dataset folder.
   `--calibration-split-name` (default `validation`, or `all`), `--calibration-samples` (default
-  300, a warning below that). `package_openvino/platform.py` has the dataset loading.
-- **Quantization hints.** NNCF's default quantized the SSD box decoding and softmax as well.
-  Pixel coordinates and scores in 8 bit dropped mAP from 0.348 to 0.152 on the micro dataset,
+  300, a warning below that).
+- **Nodes kept in floating point.** NNCF's default quantized the SSD box decoding and softmax as
+  well. Pixel coordinates and scores in 8 bit dropped mAP from 0.348 to 0.152 on the micro dataset,
   and the noisy scores let so many boxes through that NMS made `predict` 30× slower (450 ms).
-  Which graph parts must stay in float depends on the graph, so the exporter that built it
-  writes `runtime.quantization_hints.ignored_node_patterns` (ONNX node name regexes) and the
-  quantizer only reads them. SSD: everything outside `/backbone` and `/head`. Faster R-CNN:
-  only the backbone, the RPN head and the box head are quantized. A test checks that every
-  pattern still matches a node, so a renamed graph doesn't silently lose the protection.
+  Which graph parts must stay in float depends on the graph, so the code that builds the network
+  stores them as the `openvino_int8` option `ignored_node_patterns` (ONNX node name regexes), and
+  the converter only reads them. A test checks that every pattern still matches a node, so a
+  renamed graph doesn't silently lose the protection.
+- **RF-DETR needs NNCF's transformer mode** (option `model_type: transformer`): the default
+  dropped mAP from 0.66 to 0.0; transformer mode gives 0.668.
 - Preset `mixed` by default (asymmetric activations, suited to MobileNetV3's hard-swish).
-  `performance` is the alternative.
-- Results, calibrated on the 8 micro images: SSDLite320 mAP 0.348 → 0.316 on those images. On
-  100 `coco-2017` images, FP32 0.307 vs INT8 0.295–0.298 (calibrated on 8 or 200 images,
-  either preset). Faster R-CNN 0.282 → 0.275. `model.bin`: SSDLite320 13.8 → 4.2 MB.
-- **No INT8 speed-up on the dev laptop**: the i7-10875H has AVX2 but no VNNI/AMX, and the
-  network takes the same time in INT8 as in FP32 (SSD 7.1 vs 7.2 ms, Faster R-CNN 34.5 vs
-  36.1 ms). INT8 latency has to be measured on the target hardware (a question for Intel).
+  `performance` is the alternative (`--quantization-preset`).
+- Results, calibrated on the 8 micro images: SSDLite320 mAP 0.348 → 0.316 on those images. On 100
+  `coco-2017` images, FP32 0.307 vs INT8 0.295–0.298. Faster R-CNN 0.282 → 0.275. ResNet18 keeps
+  the top-1 class on 7 of 8 images. `model.bin`: SSDLite320 13.8 → 4.2 MB.
+- **INT8 speed depends on the hardware.** The dev laptop (i7-10875H) has AVX2 but no VNNI/AMX:
+  SSD and Faster R-CNN take the same time in INT8 as in FP32, ResNet18 is 2.5× faster, RF-DETR is
+  slower (163 vs 108 ms). INT8 latency has to be measured on the target hardware.
 - Not done yet: `nncf.quantize_with_accuracy_control`.
 
-The original plan, for reference:
+### 8.4 `scripts/benchmark.py`
 
-- Input: **any** ONNX bundle produced by our own exporters (Q2). The script is generic: it
-  doesn't import any flavor. Bring-your-own ONNX with a hand-written `model_info.json` comes
-  later.
-- Steps: read bundle → `ov.convert_model(model.onnx)` → optional reshape to static shape →
-  optional NNCF INT8 PTQ → write IR → copy model info, replace `runtime`
-  (format/engine/files/precision/provenance) → write OpenVINO Model API `rt_info` derived
-  from model info → write OpenVINO bundle.
-- Quantization calibration uses **the generic preprocessing from model info**. This is what
-  makes the existing RF-DETR-specific calibration code generic. Same calibration-dataset
-  handling as today: hidden dataset on the platform, `name:version` locally, ≥300 samples
-  recommended.
-- Later: `nncf.quantize_with_accuracy_control`, using the benchmark metric as the validation
-  function.
-
-### 8.3 `scripts/benchmark.py`
-
-Implemented in step 6: the script plus `package_openvino/latency.py` (`measure_latency`) and
-`package_openvino/class_mapping.py`.
-
-- Any bundle from the checkpoint or `--model-path`, `--inference-engine` to run it on another
-  engine, `--device` passed to the engine. Dataset as in the other scripts: the experiment's
-  dataset on the platform, locally `--dataset name:version` (default `coco-2017:1.0.0`) or a
-  dataset folder; `--split-name` (default `test`, or `all`), `--samples`, `--batch-size`.
-- **Accuracy**: Hafnia's `run_inference_on_dataset` + `metric_calculations`, unchanged, with the
-  bundle's default (low) score threshold. Prediction classes are aligned to the dataset's by name
-  first (`align_prediction_classes`, e.g. 91 COCO model classes to `coco-2017`'s 80). `--model-class-mapping` / `--dataset-class-mapping`
-  take a JSON file or inline JSON object and are applied with `class_mapper(method=
-  "remove_undefined")`, as in the RF-DETR benchmark. Splits without ground truth only run
-  inference. The predictions (annotations only) are written to the artifacts folder.
-- **Latency**: `measure_latency` times preprocess, model (`predict_raw_list`) and postprocess
-  per batch after `--warmup` untimed batches, on `--latency-samples` loaded images. Reports
-  mean, p50, p90, p99 per stage in ms and throughput in images/s. The latency run uses
-  `--latency-score-threshold` (default 0.3), because postprocessing time depends on it.
-  `InferenceModelBase.predict_raw_list` (the engine part of `predict_batch`) was split out so
-  the stages can be timed without copying the batching logic.
-- Everything is logged through `HafniaLogger`: configuration (model, flavor, engine and version,
-  device, format, precision, input shapes, dataset, split, batch size, settings) and metrics
-  (`object_detection/mAP`, ..., `latency/model_p90_ms`, ...), plus a summary table.
-- Measured on the dev laptop (CPU), `coco-2017` test split (69 images): Faster R-CNN ONNX on
-  OpenVINO mAP@50 0.514, model 37 ms, 25 images/s. SSDLite320 INT8 on the micro dataset:
-  preprocess 2.4 ms, model 7.4 ms, postprocess 2.0 ms, 84 images/s. Batch size 4 is slower on
-  this CPU (68 images/s).
-- Not done yet: throughput mode (OpenVINO async infer requests), `--task-name` for datasets
-  with several tasks of the model's primitive.
-
-The original plan, for reference:
-
-- Input: **any** bundle (`inference_model_from_path`), dataset, split, `--samples`,
-  `--device` (default `CPU`; passed through to the engine, so `GPU`/`NPU`/`AUTO` work where
-  available; Q7), `--batch-size`, `--warmup`, class-mapping options, `--task-name` when the
-  dataset has several tasks of the model's primitive.
-- **Accuracy**: `hafnia.dataset.benchmark.run_inference_on_dataset` + `metric_calculations`
-  (unchanged Hafnia code), class mapping on model and/or dataset side as in the RF-DETR
-  benchmark. Class mappings need to become **data** (a JSON file or inline argument) rather
-  than a hard-coded dict, because the script no longer knows the model.
-- **Latency**: new. Warm-up, then time the three stages (preprocess / `predict_raw` /
-  postprocess) per call; report mean, p50, p90, p99 and throughput (images/s), plus
-  device, engine version, precision, input shape and batch size. Sync latency (one request) and
-  throughput mode (async / multiple infer requests in OpenVINO) are different numbers. Start
-  with sync latency and add throughput mode later.
-- Log metrics and config through `HafniaLogger`. Optionally save the predictions dataset
-  (annotations only), as today.
+- Any bundle from the checkpoint or `--model-path`, `--inference-engine` to run its components on
+  another engine, `--device` passed to the engines. Dataset as in the other scripts; `--split-name`
+  (default `test`, or `all`), `--samples`, `--batch-size`.
+- **Accuracy**: Hafnia's `run_inference_on_dataset` + `metric_calculations`, with the bundle's
+  default (low) score threshold. Prediction classes are aligned to the dataset's by name first
+  (e.g. 91 COCO model classes to `coco-2017`'s 80). `--model-class-mapping` /
+  `--dataset-class-mapping` take a JSON file or inline JSON object and are applied with
+  `class_mapper(method="remove_undefined")`. Splits without ground truth only run inference. The
+  predictions (annotations only) are written to the artifacts folder.
+- **Latency**: `measure_latency` times **every component of the graph** per batch after `--warmup`
+  untimed batches, on `--latency-samples` loaded images. Reports mean, p50, p90, p99 per component
+  and in total in ms (`latency/network_p90_ms`, `latency/nms_mean_ms`, ...) and throughput in
+  images/s. The latency run uses `--latency-score-threshold` (default 0.3), because the time of
+  the components after the network depends on it.
+- Everything is logged through `HafniaLogger`: configuration (model, the implementation of each
+  component, engine versions, device, precision, dataset, split, batch size, settings) and
+  metrics, plus a summary table.
+- **Latency note (SSD, CPU, ONNX Runtime).** About 3.5 ms for resize and tensor conversion and
+  11 ms for the network. NMS takes 86 ms at the torchvision default threshold of 0.001 (about 27k
+  candidates), 4.5 ms at 0.05 and 2.7 ms at 0.3. Benchmarks must state the threshold. Accuracy
+  runs use a low one, latency runs a serving one.
+- Not done yet: throughput mode (OpenVINO async infer requests), `--task-name` for datasets with
+  several tasks of the model's primitive.
 
 ---
 
-## 9. Suggested implementation order
+## 9. Implementation order
 
 1. ✅ **Scaffold** `package-openvino` (pyproject, Dockerfile, `.hafniaignore`, `uv`), copied from
    the trainer-object-detection conventions.
-2. ✅ **Core**: model info schema, bundle I/O, `InferenceModelBase`, registry,
-   `inference_model_from_path`. Unit tests: round-trip write/load, dispatch errors.
-   Updated after the design review: engine override, typed postprocessing parameters, default
-   `preprocess()`.
-3. ✅ **torchvision → ONNX** exporter (SSDLite320 network-only, Faster R-CNN MobileNetV3 320
-   full graph) + ONNX Runtime flavors + `scripts/export_to_onnx.py`. Parity
-   against the original torch models: see 8.1.
-4. ✅ **OpenVINO** flavors (loading both ONNX and IR bundles) + generic ONNX → OpenVINO exporter
-   (save with `compress_to_fp16=False` unless FP16 is asked for, design review 4.2). Test: ORT vs
-   OV FP32 raw outputs `allclose`, same primitives (the cross-engine parity test). See 8.2.
-5. ✅ **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance. See 8.2.
-6. ✅ **Benchmark script** with latency + accuracy. Compare ORT / OV-FP32 / OV-INT8 on a sample
-   dataset. See 8.3 (and `examples/example_compare_models.py` for the comparison).
+2. ✅ **Core**: model info schema, bundle I/O, base class, registry, `inference_model_from_path`.
+3. ✅ **torchvision → ONNX** (SSDLite320 network only, Faster R-CNN MobileNetV3 320 full model) on
+   ONNX Runtime + `scripts/export_to_onnx.py`. Parity against the original torch models: see 8.1.
+4. ✅ **OpenVINO** (loading both ONNX and IR bundles) + generic ONNX → OpenVINO conversion. See 8.3.
+5. ✅ **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance. See 8.3.
+6. ✅ **Benchmark script** with latency + accuracy. See 8.4 (and
+   `examples/example_compare_models.py` for the comparison).
 7. 🔶 **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
    `hafnia runc launch-local ...` for each script, then a real experiment. Local Docker run
-   done (2026-11-19), the platform experiment is not: see "Trainer package in Docker" below.
-8. ✅ Port RF-DETR as a second family (OpenVINO and ORT flavors with decoder `rfdetr_detection`). This is the real
-   test of genericity, because its post-processing differs a lot from torchvision's. Done together with ResNet18
-   classification, see 8.1b.
+   done (2026-11-19, with the flavor design), the platform experiment is not: see "Trainer
+   package in Docker" below.
+8. ✅ RF-DETR as a second family and ResNet18 classification (2026-11-19). See 8.1.
+9. ✅ **Component graph redesign** (2026-11-20): models as graphs of components, torch as the
+   source format, generic conversion. Steps 2 to 6 and 8 were moved to it with unchanged results
+   (see "Parity" in 8.1).
 
 ---
 
 ### Trainer package in Docker (step 7)
 
-Run on 2026-11-19 with the micro dataset mounted as the experiment dataset:
+Run on 2026-11-19 with the micro dataset mounted as the experiment dataset. **Not repeated after
+the redesign of 2026-11-20**: the scripts kept their arguments, and were run locally since.
 
 - `hafnia trainer create-zip .`: 817 KiB (scripts, `src/`, Dockerfile, lock file; tests, examples
   and data excluded by `.hafniaignore`).
-- `hafnia runc build-local trainer.zip`: builds, image 13.8 GB (see the risks below).
+- `hafnia runc build-local trainer.zip`: builds, image 13.8 GB (see the risks below). The image
+  installs the project itself, which the component and converter entry points need.
 - In the image, with `HAFNIA_CLOUD=true` and the platform folders mounted, all three scripts run
   in platform mode, each taking the previous output as its checkpoint:
   `export_to_onnx.py` (25 s, downloads the torchvision weights) →
@@ -864,76 +747,102 @@ Run on 2026-11-19 with the micro dataset mounted as the experiment dataset:
 
 ## 10. Risks and things to watch
 
-- **Genericity is only proven by the second model family.** With only torchvision
-  detection, it's easy to bake its assumptions (NMS in graph, pixel boxes, in-graph resize)
-  into the "generic" layer. Port RF-DETR (or a classification model) early.
-- **Duplicated flavor code**: with independent flavor classes per engine, the ORT and
-  OpenVINO implementations of a family can drift apart. Cross-engine parity tests are
-  required for every family.
+- **Genericity is only proven by more model families.** Four families with different networks
+  (single-stage, two-stage, transformer, classifier) now share all engine code. The next test is a
+  family that needs a new component type, e.g. letterboxed YOLO or masks.
+- **Rebuilding torch networks by reference.** The rebuilt module must match the stored weights
+  exactly. Guards: `strict=True`, and a parity test against the original model per family. A new
+  family needs both.
+- **Torch bundles are not self-contained** and RF-DETR loads its checkpoints with pickle. The
+  bundle's checkpoint copy holds tensors and plain values only, and the component rejects anything
+  else. Bundles for serving should be ONNX or OpenVINO.
 - **Preprocessing drift**: tiny differences (resize interpolation, PIL vs OpenCV, RGB/BGR)
   silently cost accuracy. Parity tests against the source framework are essential.
-- **Dynamic shapes**: torchvision detection exports have dynamic H/W. NNCF and some
-  OpenVINO devices (NPU) prefer or require static shapes. The exporter should support a
-  `--static-shape` reshape.
-- **Docker image size**: torch + torchvision + openvino + nncf + onnxruntime in one
-  image. Acceptable for a trainer package, but serving images must not need torch (another
-  reason for the no-torch rule for flavors). Measured: **13.8 GB**, mostly the CUDA build of
-  torch from PyPI and its NVIDIA libraries, which the package doesn't use (export, conversion
-  and benchmarks run on CPU). The CPU-only torch wheel would cut most of it. Decision
-  (2026-11-19): keep the CUDA build for now, as in the other trainer packages.
-- **Hardware for latency numbers**: latency only means something on the target device.
-  What the platform hardware is (vs. Intel CPU/iGPU/NPU targets) matters for how the numbers
-  will be read (Q7).
-- **Untrusted uploads**: zip path traversal, file size limits, and allowing only
-  non-pickle formats.
+- **Dynamic shapes**: Faster R-CNN has dynamic H/W. NNCF and some OpenVINO devices (NPU) prefer or
+  require static shapes. `dynamic_batch: false` gives a static batch axis for the batched
+  networks; a static-shape reshape for OpenVINO is not done yet.
+- **Docker image size**: torch + torchvision + openvino + nncf + onnxruntime in one image.
+  Acceptable for a trainer package, but serving images must not need torch (which is why
+  processing components are NumPy and components are imported only when used). Measured:
+  **13.8 GB**, mostly the CUDA build of torch from PyPI and its NVIDIA libraries, which the package
+  doesn't use. The CPU-only torch wheel would cut most of it. Decision (2026-11-19): keep the CUDA
+  build for now, as in the other trainer packages.
+- **Hardware for latency numbers**: latency only means something on the target device (Q7).
+- **Untrusted uploads**: zip path traversal, file size limits, and no code or pickled objects in
+  bundles.
 
 ---
 
 ## 11. Decisions
+
+**Component graph redesign (2026-11-20):**
+
+| Question | Decision |
+|---|---|
+| What is a model? | A **graph of components** that read and write one data dictionary. Replaces flavors (Q3, Q4). |
+| How are processing steps stored? | **Named types with JSON parameters.** The code is in the installed packages, so loading a bundle never runs code from it. |
+| What is the role of torch? | **The source format, stored by reference**: weights plus the name of the code that builds the module. A generic converter goes torch → ONNX → OpenVINO → INT8 with the export options stored per component. |
+| Migration | **Replaced in place.** Bundle format 2.0.0; bundles of the flavor design have to be created again. |
+| Processing inside the engine graph | **Later.** The design allows it: a conversion can merge components, e.g. `image_to_tensor` into the OpenVINO model. |
 
 The open questions from the first draft were answered on 2026-11-18:
 
 | # | Question | Decision |
 |---|---|---|
 | Q1 | How does a model get onto the platform? | **Checkpoint zip.** The bundle is a single zip placed in `MDI_CHECKPOINT_DIR`, the same mechanism the RF-DETR/ResNet trainers use. Locally, scripts take `--model-path`. |
-| Q2 | Which ONNX models are accepted in v1? | **Our own exporters only** (e.g. `export_to_onnx.py`). Bring-your-own ONNX with a hand-written `model_info.json` comes later. |
-| Q3 | What decides which flavor loads a model? | Dispatch on **`(inference_engine, framework, postprocessing.decoder)`**. Size (nano/large/...) becomes the informational `variant` field. |
-| Q4 | How are flavors built? | **Independent classes per engine** (as in the brief). Engine packages are self-contained; optional helpers in core; cross-engine parity tests guard against drift. |
-| Q5 | Where do the ModelInfo changes live? | **In package-openvino first, with a nested `runtime` section.** Upstream to `../hafnia` once the schema has settled. |
-| Q7 | Latency devices | **CPU by default**, with a `--device` flag passed through to the engine (`GPU`/`NPU`/`AUTO` where available). |
-| Q8 | Video input | **Image only in v1** (video = frames one at a time). `runtime.input.modality` stays in the schema for later temporal models. |
-| Q9 | End-to-end test models | **`ssdlite320_mobilenet_v3_large`** and **`fasterrcnn_mobilenet_v3_large_320_fpn`**. |
+| Q2 | Which ONNX models are accepted in v1? | **Our own bundle helpers only.** Bring-your-own ONNX with a hand-written `model_info.json` comes later; with the graph design it means listing existing components. |
+| Q3 | What decides how a model is loaded? | ~~Dispatch on `(inference_engine, framework, postprocessing.decoder)`~~ Superseded: each component names its type and runtime. Size (nano/large/...) is the informational `variant` field. |
+| Q4 | How are flavors built? | ~~Independent classes per engine~~ Superseded: there are no flavors. Engines only run `network` components. |
+| Q5 | Where do the ModelInfo changes live? | **In package-openvino first.** Upstream to `../hafnia` once the schema has settled. |
+| Q7 | Latency devices | **CPU by default**, with a `--device` flag passed through to the engines (`GPU`/`NPU`/`AUTO` where available). |
+| Q8 | Video input | **Image only in v1** (video = frames one at a time). A graph can have other inputs than `image`; nothing uses that yet. |
+| Q9 | End-to-end test models | **`ssdlite320_mobilenet_v3_large`** and **`fasterrcnn_mobilenet_v3_large_320_fpn`**, later ResNet18 and RF-DETR Nano. |
 
 Assumptions not explicitly confirmed (defaults from the first draft):
 
 - **Q6:** `get_model_info()` returns `ModelInfo` (which contains `tasks: List[TaskInfo]`), not
   a bare `List[TaskInfo]`, so Hafnia's existing benchmark keeps working.
-- **Q10:** The missing second script is `scripts/export_to_onnx.py` (section 8.1; named `export_torchvision_to_onnx.py` until it supported more than torchvision).
-- **Q11:** `load_model` = bundle → model and `write_model` = model → bundle. The ONNX export
-  targets OpenVINO IR, not pt2. The reference classification trainer is
+- **Q10:** The missing second script is `scripts/export_to_onnx.py`.
+- **Q11:** The ONNX export targets OpenVINO IR, not pt2. The reference classification trainer is
   `../trainer-classification`. "ModelInference" means `InferenceModel`.
 
-Changes adopted from the [design review](design_review.md) (2026-11-18):
+Changes adopted from the [design review](design_review.md) of the flavor design (2026-11-18), and
+what became of them:
 
-| Review point | Decision |
-|---|---|
-| 1. Export contract | SSD models are exported **network only**: thresholding, top-k and NMS run in the flavor, so the score threshold is a runtime setting and the graph batches and quantizes. Faster R-CNN stays **full graph**, a stress test with its own decoder. See 8.1. |
-| 2. Engine binding | `runtime.inference_engine` is the **default** engine. `inference_model_from_path(..., inference_engine=...)` overrides it. Flavors declare `supported_formats`. |
-| 3. Preprocessing | One implementation, `preprocess_model_input()`. It is the default `InferenceModelBase.preprocess()` and is used for quantization calibration. |
-| 4.1 Settings | Decoder settings are model info defaults, overridden at load time with `postprocessing_params` and validated by the flavor's typed `params_model`. Engine options are separate keyword arguments. |
-| 4.5 `uint8` input | `scale` defaults to `None` for `uint8` inputs, so `PreprocessingInfo(dtype="uint8")` is valid. |
-| 4.2 Precision | Applied in step 4: the OpenVINO exporter compresses weights to FP16 only when asked and records `precision` and `compress_to_fp16`. |
+| Review point | Decision | In the graph design |
+|---|---|---|
+| 1. Export contract | SSD models are **network only**; Faster R-CNN stays the **full model** | Unchanged (8.1) |
+| 2. Engine binding | The bundle's engine is a default that the caller can override | Per component: `inference_engine=` |
+| 3. Preprocessing | One implementation, also used for quantization calibration | Calibration runs the graph itself up to the component |
+| 4.1 Settings | Typed decoder settings with load-time overrides; engine options separate | `params=` per component, `engine_options` |
+| 4.2 Precision | FP16 compression only when asked, recorded in the model info | Unchanged (8.3) |
+| 4.3 Open strings | Not applied | Applied: `type`, `runtime` and engine names are plain strings |
+| 4.4 `framework` in the dispatch key | Not applied | Applied: nothing dispatches on `framework` |
+| 4.5 `uint8` input | `scale` defaults to `None` for `uint8` tensors | Unchanged (`image_to_tensor`) |
 
-Not applied yet, to decide separately:
+Not applied, to decide separately: centre crop (4.5), file hashes (4.6), points to raise with
+Intel (5.x), smaller code findings (6.x).
 
-- 4.3: open strings for engine/format instead of `Literal`.
-- 4.4: drop `framework` from the dispatch key (would revisit Q3).
-- 4.5: centre crop.
-- 4.6: file hashes.
-- 5.x: points to raise with Intel.
-- 6.x: smaller code findings.
-
-Still open (not blocking v1):
+Still open:
 
 - Does the Intel collaboration have target hardware or reference latency numbers (e.g. from
   OpenVINO `benchmark_app`) to compare against?
+
+---
+
+## The flavor design (until 2026-11-20)
+
+For reference, what the redesign replaced (git history has the code, up to commit `e890172`):
+
+- `model_info.json` had a `runtime` section: one model file, declarative `preprocessing`
+  (resize, scale, mean/std, with steps marked as "in the graph"), a named `postprocessing.decoder`
+  with parameters, and `quantization_hints`.
+- A **flavor** was an `InferenceModelBase` subclass per (engine, framework, decoder), with a fixed
+  `preprocess → predict_raw → postprocess` pipeline. Postprocessing was duplicated per engine
+  and kept in line by cross-engine parity tests.
+- Exporters wrote ONNX bundles directly; `export_onnx_bundle_to_openvino` and `quantize_bundle`
+  converted them.
+
+What didn't hold up: every model family needed a flavor class per engine, and the three fixed
+stages with fixed signatures couldn't express a model that needs another order of steps or extra
+data between them.

@@ -1,5 +1,5 @@
-"""Core of the generic inference model concept: model info, model bundles, the 'InferenceModelBase' class
-and the flavor registry. Engine agnostic and torch free (see docs/design.md)."""
+"""Core of the generic inference model concept: model info, model bundles, components, the model graph that
+runs them and bundle conversion. Engine agnostic and torch free (see docs/design.md)."""
 
 from inference_model_core.bundle import (
     MODEL_INFO_FILENAME,
@@ -9,44 +9,55 @@ from inference_model_core.bundle import (
     validate_bundle,
     write_bundle,
 )
-from inference_model_core.inference_model import InferenceModelBase, RawTensors
+from inference_model_core.component import (
+    Component,
+    ComponentKey,
+    LoadOptions,
+    NumpyComponent,
+    get_component_class,
+    list_components,
+    register_component,
+)
+from inference_model_core.convert import ConversionRequest, convert_bundle, list_converters, register_converter
+from inference_model_core.graph import ModelGraph
+from inference_model_core.inference_model import GraphInferenceModel, inference_model_from_path
 from inference_model_core.model_info import (
-    FlavorKey,
-    InputInfo,
+    ComponentInfo,
+    ConversionInfo,
+    GraphInfo,
     ModelBundleInfo,
-    PostprocessingInfo,
-    PreprocessingInfo,
-    QuantizationHints,
-    ResizeInfo,
-    RuntimeInfo,
+    NetworkParams,
     TensorInfo,
 )
-from inference_model_core.preprocessing import PreprocessMeta, load_image_rgb, preprocess_image
-from inference_model_core.registry import get_flavor, inference_model_from_path, list_flavors, register_flavor
+from inference_model_core.preprocessing import ImageTransform, load_image_rgb
 
 __all__ = [
     "MODEL_INFO_FILENAME",
-    "FlavorKey",
-    "InferenceModelBase",
-    "InputInfo",
+    "Component",
+    "ComponentInfo",
+    "ComponentKey",
+    "ConversionInfo",
+    "ConversionRequest",
+    "GraphInferenceModel",
+    "GraphInfo",
+    "ImageTransform",
+    "LoadOptions",
     "ModelBundleInfo",
-    "PostprocessingInfo",
-    "PreprocessMeta",
-    "PreprocessingInfo",
-    "QuantizationHints",
-    "RawTensors",
-    "ResizeInfo",
-    "RuntimeInfo",
+    "ModelGraph",
+    "NetworkParams",
+    "NumpyComponent",
     "TensorInfo",
-    "get_flavor",
+    "convert_bundle",
+    "get_component_class",
     "inference_model_from_path",
-    "list_flavors",
+    "list_components",
+    "list_converters",
     "load_image_rgb",
     "open_bundle",
-    "preprocess_image",
     "read_bundle_file",
     "read_model_info",
-    "register_flavor",
+    "register_component",
+    "register_converter",
     "validate_bundle",
     "write_bundle",
 ]

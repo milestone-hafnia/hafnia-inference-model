@@ -1,4 +1,4 @@
-"""Optional helpers for flavors to convert decoded model outputs into hafnia primitives."""
+"""Helpers to convert decoded model outputs into hafnia primitives."""
 
 from typing import List
 
@@ -6,7 +6,7 @@ import numpy as np
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
 
-from inference_model_core.preprocessing import PreprocessMeta
+from inference_model_core.preprocessing import ImageTransform
 
 
 def bboxes_from_input_xyxy(
@@ -14,7 +14,7 @@ def bboxes_from_input_xyxy(
     scores: np.ndarray,
     class_indices: np.ndarray,
     task: TaskInfo,
-    meta: PreprocessMeta,
+    transform: ImageTransform,
     score_threshold: float = 0.0,
 ) -> List[Bbox]:
     """Convert decoded detections to 'Bbox' predictions on the original image.
@@ -22,17 +22,16 @@ def bboxes_from_input_xyxy(
     Args:
         boxes_xyxy: (N, 4) boxes in pixel coordinates of the model input.
         scores: (N,) confidence scores.
-        class_indices: (N,) indices into 'task.classes'. Flavors map raw model labels (e.g. with a
-            background class or gaps) to these indices before calling this function.
+        class_indices: (N,) indices into 'task.classes'.
         task: The model task the boxes belong to.
-        meta: Preprocessing metadata of the image.
+        transform: How the original image maps to the model input.
         score_threshold: Detections with a lower score are dropped.
     """
     class_names = task.get_class_names()
     if class_names is None:
         raise ValueError(f"Task '{task.name}' has no classes defined.")
 
-    boxes = meta.input_xyxy_to_normalized(boxes_xyxy)
+    boxes = transform.input_xyxy_to_normalized(boxes_xyxy)
     scores = np.asarray(scores).reshape(-1)
     class_indices = np.asarray(class_indices).reshape(-1)
     if not (len(boxes) == len(scores) == len(class_indices)):

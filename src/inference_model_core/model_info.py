@@ -2,116 +2,32 @@
 
 'ModelBundleInfo' extends hafnia's 'ModelInfo' (name, tasks, references, ...) with:
 - identity fields that survive conversions ('framework', 'variant')
-- a nested 'runtime' section describing how the model is stored and executed. An export (e.g.
-  ONNX -> OpenVINO) copies the model info and only replaces the 'runtime' section.
+- a 'graph': the ordered list of components that turn the graph inputs (e.g. an image) into the graph outputs
+  (e.g. predictions). Each component reads and writes named items of one data dictionary.
+
+A conversion (e.g. ONNX -> OpenVINO) copies the model info and only replaces the components it converts.
 
 The extension lives here until the schema has settled and is then moved to hafnia (see docs/design.md).
 """
 
+import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from hafnia.dataset.hafnia_dataset_types import ModelInfo
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-MODEL_INFO_FORMAT_VERSION = "1.0.0"
+MODEL_INFO_FORMAT_VERSION = "2.0.0"
 
-ModelFormat = Literal["onnx", "openvino", "pt2", "tensorrt"]
-InferenceEngine = Literal["onnxruntime", "openvino", "tensorrt", "torch"]
 Precision = Literal["fp32", "fp16", "int8"]
-PreprocessingStep = Literal["color_order", "resize", "scale", "normalize", "layout"]
 
+# Runtimes of this repo. Other packages can add their own, so the fields are plain strings.
+RUNTIME_NUMPY = "numpy"
+RUNTIME_TORCH = "torch"
+RUNTIME_ONNX = "onnx"
+RUNTIME_OPENVINO = "openvino"
 
-class ResizeInfo(BaseModel):
-    mode: Literal["stretch", "letterbox", "keep_ratio_pad", "none"] = Field(
-        description=(
-            "'stretch': resize to (height, width) ignoring aspect ratio. "
-            "'letterbox': keep aspect ratio and pad equally on both sides. "
-            "'keep_ratio_pad': keep aspect ratio and pad only bottom/right. "
-            "'none': no resizing."
-        )
-    )
-    height: Optional[int] = Field(default=None, description="Target height. 'None' takes it from the input shape")
-    width: Optional[int] = Field(default=None, description="Target width. 'None' takes it from the input shape")
-    interpolation: Literal["linear", "nearest", "cubic", "area"] = "linear"
-    antialias: bool = Field(
-        default=False,
-        description=(
-            "Low-pass filter when downscaling, as torchvision's 'Resize' does by default on tensors (and PIL). "
-            "Models trained with torchvision transforms need it to see the same pixels at inference"
-        ),
-    )
-    pad_value: float = Field(default=0.0, description="Pixel value (0-255) used for padding")
-
-
-class PreprocessingInfo(BaseModel):
-    """Declarative image -> input tensor steps, applied in this order:
-    color_order -> resize -> scale -> normalize -> layout -> dtype.
-
-    Steps listed in 'in_graph' are performed inside the model graph and are skipped outside of it."""
-
-    color_order: Literal["RGB", "BGR"] = "RGB"
-    resize: Optional[ResizeInfo] = None
-    scale: Optional[float] = Field(default=1 / 255, description="Pixel multiplier applied before normalization")
-    mean: Optional[List[float]] = Field(default=None, description="Per-channel mean, after scaling")
-    std: Optional[List[float]] = Field(default=None, description="Per-channel std, after scaling")
-    layout: Literal["NCHW", "NHWC"] = "NCHW"
-    dtype: Literal["float32", "float16", "uint8"] = "float32"
-    in_graph: List[PreprocessingStep] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _no_default_scale_for_uint8(cls, data: Any) -> Any:
-        # The default 'scale' (1/255) only applies to float inputs; 'uint8' inputs are never scaled
-        if isinstance(data, dict) and data.get("dtype") == "uint8" and "scale" not in data:
-            return {**data, "scale": None}
-        return data
-
-    @model_validator(mode="after")
-    def _check_normalization(self) -> "PreprocessingInfo":
-        if (self.mean is None) != (self.std is None):
-            raise ValueError("'mean' and 'std' must either both be set or both be None.")
-        if self.mean is not None and self.std is not None:
-            if len(self.mean) != len(self.std):
-                raise ValueError(f"'mean' ({len(self.mean)}) and 'std' ({len(self.std)}) must have the same length.")
-            if any(s == 0 for s in self.std):
-                raise ValueError("'std' must not contain zeros.")
-        if self.dtype == "uint8" and (self.scale is not None or self.mean is not None):
-            raise ValueError("'uint8' input can not be scaled or normalized. Set 'scale', 'mean' and 'std' to None.")
-        return self
-
-    def is_applied_outside_graph(self, step: PreprocessingStep) -> bool:
-        return step not in self.in_graph
-
-
-class PostprocessingInfo(BaseModel):
-    decoder: str = Field(description="Name of the decoder (code) that turns raw outputs into primitives")
-    params: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Decoder parameters, e.g. thresholds, output tensor names, box format, label mapping",
-    )
-
-
-class QuantizationHints(BaseModel):
-    """Graph knowledge for post-training quantization, written by the exporter that built the graph.
-
-    Quantizers stay model agnostic by reading these hints instead of knowing each model's graph.
-    """
-
-    ignored_node_patterns: List[str] = Field(
-        default_factory=list,
-        description=(
-            "Regular expressions (full match) of graph node names to keep in floating point, e.g. box "
-            "decoding and score computation in the graph, where 8 bit values lose pixel and score precision"
-        ),
-    )
-    model_type: Optional[Literal["transformer"]] = Field(
-        default=None,
-        description=(
-            "Model architecture for the quantizer's defaults: 'transformer' keeps transformer specific operations "
-            "(e.g. softmax, layer norm) in floating point. 'None' for convolutional networks"
-        ),
-    )
+_COMPONENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 
 
 class TensorInfo(BaseModel):
@@ -120,60 +36,134 @@ class TensorInfo(BaseModel):
     dtype: str = "float32"
 
 
-class InputInfo(BaseModel):
-    modality: Literal["image", "video"] = Field(
-        default="image", description="Only 'image' is supported in v1. 'video' is reserved for temporal models"
-    )
-    tensors: List[TensorInfo] = Field(min_length=1)
+class NetworkParams(BaseModel):
+    """Parameters of 'network' components: a tensor graph stored in model files (ONNX, OpenVINO IR).
 
+    The component's input and output ports are the tensor names.
+    """
 
-class RuntimeInfo(BaseModel):
-    model_format: ModelFormat
-    inference_engine: InferenceEngine = Field(
-        description=(
-            "Default engine for running the model. Callers can run the bundle on another engine that "
-            "supports 'model_format', e.g. an ONNX bundle on OpenVINO"
-        )
-    )
-    file_path: str = Field(description="Model entry file relative to the bundle root, e.g. 'model.xml'")
-    extra_files: List[str] = Field(default_factory=list, description="Companion files, e.g. ['model.bin']")
     precision: Precision = "fp32"
-    input: InputInfo
-    outputs: List[TensorInfo] = Field(default_factory=list)
-    preprocessing: PreprocessingInfo
-    postprocessing: PostprocessingInfo
-    quantization_hints: Optional[QuantizationHints] = None
-    provenance: Optional[Dict[str, Any]] = Field(
-        default=None, description="E.g. parent bundle, tool versions and quantization settings"
+    input_tensors: List[TensorInfo] = Field(min_length=1)
+    output_tensors: List[TensorInfo] = Field(min_length=1)
+
+
+class ConversionInfo(BaseModel):
+    """Whether and how a component converts to one target (e.g. 'onnx', 'openvino', 'openvino_int8')."""
+
+    supported: bool = True
+    reason: Optional[str] = Field(default=None, description="Why the conversion is not supported")
+    options: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Export options of this component for the target, e.g. the ONNX opset and dynamic batch axis, or the "
+            "graph nodes to keep in floating point when quantizing"
+        ),
     )
 
-    @field_validator("file_path")
-    @classmethod
-    def _check_file_path(cls, file_path: str) -> str:
-        return check_relative_bundle_path(file_path)
 
-    @field_validator("extra_files")
+class ComponentInfo(BaseModel):
+    """One step of the model graph."""
+
+    name: str = Field(description="Unique name in the graph, also the folder of the component's files")
+    type: str = Field(description="What the component does, e.g. 'resize_image', 'network', 'anchor_nms'")
+    runtime: str = Field(description="How the component is expressed: 'numpy', 'torch', 'onnx', 'openvino', ...")
+    inputs: Dict[str, str] = Field(description="Input port (argument or tensor name) -> data dictionary key")
+    outputs: Dict[str, str] = Field(description="Output port (result or tensor name) -> data dictionary key")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Parameters of the component type")
+    files: List[str] = Field(default_factory=list, description="Files of the component, relative to the bundle")
+    batched: bool = Field(
+        default=False,
+        description=(
+            "'True': called once per batch, with every input stacked on a new first axis. 'False': called once "
+            "per sample"
+        ),
+    )
+    conversions: Dict[str, ConversionInfo] = Field(
+        default_factory=dict,
+        description="Conversion target -> support and export options. A missing target can not be converted to",
+    )
+    provenance: Optional[Dict[str, Any]] = Field(
+        default=None, description="E.g. the component it was converted from, tool versions, quantization settings"
+    )
+
+    @field_validator("name")
     @classmethod
-    def _check_extra_files(cls, extra_files: List[str]) -> List[str]:
-        return [check_relative_bundle_path(path) for path in extra_files]
+    def _check_name(cls, name: str) -> str:
+        if not _COMPONENT_NAME_PATTERN.fullmatch(name):
+            raise ValueError(f"Component names are lower case identifiers ('a-z', '0-9', '_'), got '{name}'.")
+        return name
+
+    @field_validator("files")
+    @classmethod
+    def _check_files(cls, files: List[str]) -> List[str]:
+        return [check_relative_bundle_path(path) for path in files]
 
     @model_validator(mode="after")
-    def _check_unique_files(self) -> "RuntimeInfo":
+    def _check_ports(self) -> "ComponentInfo":
+        if not self.outputs:
+            raise ValueError(f"Component '{self.name}' has no outputs.")
+        return self
+
+
+class GraphInfo(BaseModel):
+    """Components are run in list order. Every data key is written exactly once: by the caller (graph inputs)
+    or by one component."""
+
+    inputs: List[str] = Field(min_length=1, description="Data keys provided by the caller, e.g. ['image']")
+    outputs: List[str] = Field(min_length=1, description="Data keys returned to the caller, e.g. ['predictions']")
+    components: List[ComponentInfo] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_graph(self) -> "GraphInfo":
+        names = [component.name for component in self.components]
+        if len(set(names)) != len(names):
+            raise ValueError(f"Component names must be unique, got {names}.")
         all_files = self.all_files()
         if len(set(all_files)) != len(all_files):
             raise ValueError(f"Bundle files must be unique, got {all_files}.")
+
+        available = set(self.inputs)
+        if len(available) != len(self.inputs):
+            raise ValueError(f"Graph inputs must be unique, got {self.inputs}.")
+        for component in self.components:
+            missing = sorted(set(component.inputs.values()) - available)
+            if missing:
+                raise ValueError(
+                    f"Component '{component.name}' reads {missing}, which no graph input or earlier component "
+                    f"provides. Available: {sorted(available)}."
+                )
+            written = list(component.outputs.values())
+            rewritten = sorted({key for key in written if key in available or written.count(key) > 1})
+            if rewritten:
+                raise ValueError(f"Component '{component.name}' writes {rewritten}, which already exist.")
+            available.update(written)
+        missing_outputs = sorted(set(self.outputs) - available)
+        if missing_outputs:
+            raise ValueError(f"No component writes the graph outputs {missing_outputs}.")
         return self
 
     def all_files(self) -> List[str]:
-        return [self.file_path, *self.extra_files]
+        return [path for component in self.components for path in component.files]
 
+    def get_component(self, name: str) -> ComponentInfo:
+        for component in self.components:
+            if component.name == name:
+                return component
+        raise KeyError(f"No component '{name}' in the graph. Components: {[c.name for c in self.components]}")
 
-class FlavorKey(NamedTuple):
-    """Selects the 'InferenceModelBase' flavor that can load and run a model bundle."""
-
-    inference_engine: str
-    framework: str
-    decoder: str
+    def components_for(self, outputs: List[str]) -> List[ComponentInfo]:
+        """The components needed to compute the data keys 'outputs', in execution order."""
+        produced = set(self.inputs) | {key for component in self.components for key in component.outputs.values()}
+        unknown = sorted(set(outputs) - produced)
+        if unknown:
+            raise KeyError(f"The graph has no data keys {unknown}. Available: {sorted(produced)}")
+        needed_keys = set(outputs)
+        needed: List[ComponentInfo] = []
+        for component in reversed(self.components):
+            if needed_keys & set(component.outputs.values()):
+                needed.append(component)
+                needed_keys.update(component.inputs.values())
+        return needed[::-1]
 
 
 class ModelBundleInfo(ModelInfo):
@@ -183,27 +173,25 @@ class ModelBundleInfo(ModelInfo):
         default=None,
         description="Informational model variant/size, e.g. 'nano' or 'ssdlite320_mobilenet_v3_large'",
     )
-    runtime: RuntimeInfo
+    graph: GraphInfo
 
-    @field_validator("format_version")
+    @model_validator(mode="before")
     @classmethod
-    def _check_format_version(cls, format_version: str) -> str:
-        major = format_version.split(".")[0]
-        supported_major = MODEL_INFO_FORMAT_VERSION.split(".")[0]
-        if major != supported_major:
-            raise ValueError(
-                f"Unsupported model info format version '{format_version}'. "
-                f"Supported major version is '{supported_major}'."
-            )
-        return format_version
+    def _check_format_version(cls, data: Any) -> Any:
+        # Checked before the fields, so a bundle of another format version gets this error and not a list of
+        # missing and unknown fields
+        if isinstance(data, dict):
+            format_version = str(data.get("format_version", MODEL_INFO_FORMAT_VERSION))
+            supported_major = MODEL_INFO_FORMAT_VERSION.split(".")[0]
+            if format_version.split(".")[0] != supported_major:
+                raise ValueError(
+                    f"Unsupported model info format version '{format_version}'. Supported major version is "
+                    f"'{supported_major}': bundles of other versions have to be created again."
+                )
+        return data
 
-    def flavor_key(self, inference_engine: Optional[str] = None) -> FlavorKey:
-        """Flavor key for running this model, on 'inference_engine' or the default engine of the bundle."""
-        return FlavorKey(
-            inference_engine=inference_engine or self.runtime.inference_engine,
-            framework=self.framework,
-            decoder=self.runtime.postprocessing.decoder,
-        )
+    def all_files(self) -> List[str]:
+        return self.graph.all_files()
 
     def write_json(self, path: Union[str, Path], indent: Optional[int] = 4) -> None:
         Path(path).write_text(self.model_dump_json(indent=indent))
