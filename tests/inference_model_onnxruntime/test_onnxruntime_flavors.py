@@ -4,10 +4,10 @@ Hafnia's benchmark. Parity with torch is tested with the exporter ('tests/model_
 import math
 
 import pytest
-from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import assert_detections_match
 
 from inference_model_core import inference_model_from_path
+from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")

@@ -21,7 +21,7 @@ See 'example_compare_models.py' for several models and engines benchmarked side 
 
 from pathlib import Path
 
-from hafnia.dataset.benchmark.benchmark import InferenceModel, run_benchmark
+from hafnia.dataset.benchmark.benchmark import InferenceModel
 from hafnia.dataset.hafnia_dataset import HafniaDataset, Primitive
 from hafnia.dataset.hafnia_dataset_types import Sample
 from hafnia.dataset.image_visualizations import draw_annotations
@@ -31,6 +31,7 @@ from rich import print as rprint
 from inference_model_core import inference_model_from_path, read_model_info
 from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
 from model_exporters.torchvision_detection import export_pretrained_torchvision_detection
+from package_openvino.metrics import run_benchmark
 
 ##### PREPARE EXAMPLE #####
 MODEL_NAME = "ssdlite320_mobilenet_v3_large"  # Or "fasterrcnn_mobilenet_v3_large_320_fpn"

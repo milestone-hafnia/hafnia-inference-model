@@ -3,10 +3,10 @@ import pytest
 
 from inference_model_core.detection import (
     batched_nms,
-    map_labels,
     nms,
     select_anchor_detections,
     select_query_detections,
+    task_label_mask,
 )
 
 torch = pytest.importorskip("torch")
@@ -76,13 +76,10 @@ def test_select_anchor_detections_without_candidates():
     assert boxes.shape == (0, 4) and scores.shape == (0,) and labels.shape == (0,)
 
 
-def test_map_labels():
-    class_indices, keep = map_labels(np.array([0, 1, 2, 3, 1]), label_to_class_idx=[-1, 0, -1, 1])
-    np.testing.assert_array_equal(class_indices, [0, 1, 0])
-    np.testing.assert_array_equal(keep, [False, True, False, True, True])
-
-    with pytest.raises(ValueError, match="must be in"):
-        map_labels(np.array([4]), label_to_class_idx=[-1, 0, -1, 1])
+def test_task_label_mask():
+    assert task_label_mask(np.array([0, 2, 3, 1]), n_classes=3).tolist() == [True, True, False, True]
+    with pytest.raises(ValueError, match=">= 0"):
+        task_label_mask(np.array([-1]), n_classes=3)
 
 
 def test_select_query_detections_matches_rfdetr_postprocess():

@@ -1,12 +1,11 @@
-"""Optional NumPy helpers for detection decoders: NMS, per-class candidate selection, query top-k and label
-mapping.
+"""Optional NumPy helpers for detection decoders: NMS, per-class candidate selection and query top-k.
 
 They reproduce the source frameworks' semantics ('torchvision.ops.batched_nms', 'SSD.postprocess_detections',
 RF-DETR's 'PostProcess'), so thresholding and NMS can run outside the exported graph. NumPy only: nothing here
 may depend on torch.
 """
 
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -96,20 +95,13 @@ def select_anchor_detections(
     return np.concatenate(candidate_boxes)[order], all_scores[order], np.concatenate(candidate_labels)[order]
 
 
-def map_labels(labels: np.ndarray, label_to_class_idx: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
-    """Map raw model labels to task class indices. Labels mapped to -1 (e.g. background or unused 'N/A'
-    entries of torchvision's COCO categories) are dropped.
-
-    Returns:
-        (class indices of the kept detections, boolean mask of kept detections)
-    """
-    mapping = np.asarray(label_to_class_idx, dtype=np.int64)
+def task_label_mask(labels: np.ndarray, n_classes: int) -> np.ndarray:
+    """Which labels are classes of the task. Bundles have one task class per model label, but a model can have
+    extra outputs that are not classes, such as RF-DETR's "no object" logit column after the last class."""
     labels = np.asarray(labels, dtype=np.int64)
-    if labels.size and (labels.min() < 0 or labels.max() >= len(mapping)):
-        raise ValueError(f"Model labels must be in [0, {len(mapping)}), got [{labels.min()}, {labels.max()}].")
-    class_indices = mapping[labels]
-    keep = class_indices >= 0
-    return class_indices[keep], keep
+    if labels.size and labels.min() < 0:
+        raise ValueError(f"Model labels must be >= 0, got {labels.min()}.")
+    return labels < n_classes
 
 
 def sigmoid(values: np.ndarray) -> np.ndarray:

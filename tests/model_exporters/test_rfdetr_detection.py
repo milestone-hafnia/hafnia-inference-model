@@ -17,7 +17,7 @@ from inference_model_core import inference_model_from_path, read_model_info
 pytest.importorskip("rfdetr")
 pytest.importorskip("onnxruntime")
 from model_exporters.registry import export_trainer_archive
-from model_exporters.rfdetr_detection import DEFAULT_SCORE_THRESHOLD, task_from_categories
+from model_exporters.rfdetr_detection import DEFAULT_SCORE_THRESHOLD
 
 pytestmark = pytest.mark.slow
 
@@ -49,10 +49,11 @@ def test_model_info(rfdetr, micro_coco):
     coco_class_names = micro_coco.info.get_task_by_name("object_detection").get_class_names()
 
     assert (info.framework, info.runtime.postprocessing.decoder) == ("rfdetr", "rfdetr_detection")
-    assert info.tasks[0].get_class_names() == coco_class_names
+    # One class per logit column: COCO ids, with placeholders for id 0 and the unused ids. Same as torchvision's.
+    class_names = info.tasks[0].get_class_names()
+    assert len(class_names) == 91 and class_names[0] == "NotDefined_000"
+    assert [name for name in class_names if not name.startswith("NotDefined_")] == coco_class_names
     assert info.runtime.input.tensors[0].shape == [None, 3, RESOLUTION, RESOLUTION]
-    label_to_class_idx = info.runtime.postprocessing.params["label_to_class_idx"]
-    assert len(label_to_class_idx) == 91 and label_to_class_idx[0] == -1  # COCO ids, 0 is unused
     assert info.runtime.quantization_hints.model_type == "transformer"
 
 
@@ -94,7 +95,7 @@ def test_matches_rfdetr_on_original_images(rfdetr, images):
 
 def test_trainer_archive(rfdetr, tmp_path, images):
     """A trainer-object-detection archive with the pretrained weights gives the same detections as the
-    pretrained export, and its placeholder classes are dropped from the task."""
+    pretrained export and the same task."""
     torch_model, categories, path_pretrained_bundle = rfdetr
     task = TaskInfo.from_class_names(primitive=Bbox, class_names=categories, name="object_detection")
     path_weights = Path(torch_model.model_config.pretrain_weights)
@@ -109,11 +110,3 @@ def test_trainer_archive(rfdetr, tmp_path, images):
     expected = inference_model_from_path(path_pretrained_bundle).predict(images[0])
     predicted = inference_model_from_path(path_bundle).predict(images[0])
     assert assert_detections_match(expected, predicted, min_score=0.05, min_iou=0.999, max_score_diff=1e-4) > 0
-
-
-def test_task_from_categories():
-    task, label_to_class_idx = task_from_categories(["NotDefined_000", "person", "NotDefined_002", "car"], 5)
-    assert task.get_class_names() == ["person", "car"]
-    assert label_to_class_idx == [-1, 0, -1, 1, -1]  # The last column ("no object") is not a class
-    with pytest.raises(ValueError, match="logit columns"):
-        task_from_categories(["a", "b", "c"], 2)

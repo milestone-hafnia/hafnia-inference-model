@@ -19,13 +19,15 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
 import onnx  # noqa: E402
 
-from model_exporters.torchvision_detection import IGNORED_CATEGORIES  # noqa: E402
+from model_exporters.torchvision_detection import task_from_categories  # noqa: E402
 
 pytestmark = pytest.mark.slow
 
 
 def torch_detections(model, categories: List[str], image: np.ndarray) -> List[Bbox]:
-    """Run the original torch model and convert its detections to normalized 'Bbox' primitives."""
+    """Run the original torch model and convert its detections to normalized 'Bbox' primitives. Labels are task
+    class indices (one class per model label)."""
+    class_names = task_from_categories(categories).get_class_names() or []
     image_tensor = torch.from_numpy(image).permute(2, 0, 1).float() / 255
     with torch.no_grad():
         output = model([image_tensor])[0]
@@ -34,15 +36,13 @@ def torch_detections(model, categories: List[str], image: np.ndarray) -> List[Bb
     for (x0, y0, x1, y1), label, score in zip(
         output["boxes"].tolist(), output["labels"].tolist(), output["scores"].tolist(), strict=True
     ):
-        if categories[label] in IGNORED_CATEGORIES:
-            continue
         detections.append(
             Bbox(
                 top_left_x=x0 / width,
                 top_left_y=y0 / height,
                 width=(x1 - x0) / width,
                 height=(y1 - y0) / height,
-                class_name=categories[label],
+                class_name=class_names[label],
                 confidence=score,
             )
         )
@@ -54,9 +54,13 @@ def test_model_info(ssd, frcnn, micro_coco):
     coco_class_names = micro_coco.info.get_task_by_name("object_detection").get_class_names()
 
     for info in (ssd_info, frcnn_info):
+        # One class per model label: the 80 COCO classes plus unique placeholders for background and unused ids
+        class_names = info.tasks[0].get_class_names()
         assert info.framework == "torchvision"
-        assert info.tasks[0].get_class_names() == coco_class_names
-        assert len(info.runtime.postprocessing.params["label_to_class_idx"]) == 91
+        assert len(class_names) == 91
+        assert (class_names[0], class_names[12]) == ("NotDefined_000", "NotDefined_012")
+        assert [name for name in class_names if not name.startswith("NotDefined_")] == coco_class_names
+        assert "label_to_class_idx" not in info.runtime.postprocessing.params
 
     assert ssd_info.runtime.input.tensors[0].shape == [None, 3, 320, 320]
     assert ssd_info.runtime.preprocessing.resize is not None

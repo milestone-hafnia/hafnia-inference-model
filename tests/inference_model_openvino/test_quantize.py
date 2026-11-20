@@ -10,9 +10,9 @@ import zipfile
 
 import numpy as np
 import pytest
-from hafnia.dataset.benchmark.benchmark import run_benchmark
 
 from inference_model_core import inference_model_from_path, read_model_info
+from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("nncf")

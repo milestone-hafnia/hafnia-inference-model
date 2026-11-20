@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from hafnia.dataset.benchmark.benchmark import run_benchmark
 from hafnia.dataset.hafnia_dataset import HafniaDataset
 from hafnia.dataset.hafnia_dataset_types import Sample
 from hafnia.utils import progress_bar
@@ -41,6 +40,7 @@ from inference_model_core import inference_model_from_path
 from inference_model_openvino.export_onnx import export_onnx_bundle_to_openvino
 from inference_model_openvino.quantize import quantize_bundle
 from model_exporters.registry import export_pretrained
+from package_openvino.metrics import run_benchmark
 
 MODELS = {
     "SSDLite320": "ssdlite320_mobilenet_v3_large",

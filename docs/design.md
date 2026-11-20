@@ -418,7 +418,7 @@ The `model_info.json` that `scripts/export_to_onnx.py` writes for SSDLite320
     "postprocessing": {
       "decoder": "anchor_boxes_nms",
       "params": {"score_threshold": 0.001, "nms_iou_threshold": 0.55, "topk_candidates": 300, "max_detections": 300,
-                 "background_index": 0, "label_to_class_idx": [-1, 0, 1, 2, "... 91 entries"]}
+                 "background_index": 0}
     },
     "quantization_hints": {"ignored_node_patterns": ["/(?!backbone/|head/).*"]},
     "provenance": {"exporter": "model_exporters.torchvision_detection", "torch": "2.10.0+cu128",
@@ -429,7 +429,7 @@ The `model_info.json` that `scripts/export_to_onnx.py` writes for SSDLite320
 
 The Faster R-CNN bundle differs: input `image` `[3, null, null]` with
 `in_graph: ["resize", "normalize"]`, outputs `boxes`/`scores`/`labels` per detection, and decoder
-`boxes_scores_labels` with `score_threshold` and `label_to_class_idx` only.
+`boxes_scores_labels` with `score_threshold` only.
 
 ### TaskInfo
 
@@ -450,6 +450,22 @@ Options:
 
 Option (a) needs no change to `TaskInfo` itself. Other `TaskInfo` additions don't look
 necessary for v1.
+
+**Changed on 2026-11-19: one task class per model label** (option (c), without a mapping).
+Exporters now put every model label in the task, with unique placeholder names for labels
+without a class: `NotDefined_000`, `NotDefined_012`, ..., the convention of trainer-object-detection's
+archives (`model_exporters/class_names.py`). Label = class index, so `label_to_class_idx` is
+gone. COCO models (SSD, Faster R-CNN, RF-DETR) carry the same 91-class task, and trainer archives
+pass through unchanged. The decoders only drop labels beyond the task's classes
+(`task_label_mask`, for RF-DETR's "no object" column).
+
+The cost is in evaluation: Hafnia's metrics require the prediction task's class names to equal
+the ground truth's, in order. `package_openvino/metrics.py` aligns the predictions to the
+dataset's classes by name before computing metrics (`align_prediction_classes`, and a
+`run_benchmark` wrapper), removing predictions of other classes. It raises when the dataset has
+classes the model doesn't, since then the label spaces differ and a class mapping is needed.
+A cleaner long-term fix is upstream in hafnia: let the metrics ignore prediction classes the
+ground truth doesn't have.
 
 ### Where should the change live?
 
@@ -567,8 +583,8 @@ Implemented: the script plus `model_exporters/torchvision_detection.py`. The lib
 - Input: a pretrained model name: `ssdlite320_mobilenet_v3_large` or
   `fasterrcnn_mobilenet_v3_large_320_fpn` (Q9).
 - Output: an ONNX bundle in the experiment model folder. Tasks come from
-  `weights.meta["categories"]`, with the `__background__` and `N/A` labels mapped to -1 through
-  `label_to_class_idx`.
+  `weights.meta["categories"]`, one class per label: `__background__` and the `N/A` labels get
+  unique placeholder names (`NotDefined_000`, ...), see "TaskInfo" in section 5.
 - Both use the TorchScript-based exporter (`dynamo=False`, opset 17).
 
 Two export contracts (design review, point 1):
@@ -648,8 +664,8 @@ standardized-graph redesign.
 - **`rfdetr` dependency**: optional extra `rfdetr` (`rfdetr==1.8.1`, same torch 2.10.0), used by
   `model_exporters` only.
 - **Placeholder classes**: RF-DETR's COCO logits use COCO ids (column 0 and 10 ids are unused,
-  `NotDefined_*` in the trainer's archives). They map to -1 in `label_to_class_idx`, so the task
-  has the 80 real classes, the same names as `coco-2017`.
+  `NotDefined_*` in the trainer's archives). They stay task classes under those names, so the task
+  has 91 classes, the same as the torchvision COCO models (see "TaskInfo" in section 5).
 - **Antialiased resize** (`ResizeInfo.antialias`): both trainers resize with torchvision on
   tensors, which antialiases when downscaling. OpenCV's linear resize differed by 2–4 gray levels
   on average; PIL's bilinear resize matches torchvision within 0.25. Both exporters set it.
@@ -756,7 +772,8 @@ Implemented in step 6: the script plus `package_openvino/latency.py` (`measure_l
   dataset on the platform, locally `--dataset name:version` (default `coco-2017:1.0.0`) or a
   dataset folder; `--split-name` (default `test`, or `all`), `--samples`, `--batch-size`.
 - **Accuracy**: Hafnia's `run_inference_on_dataset` + `metric_calculations`, unchanged, with the
-  bundle's default (low) score threshold. `--model-class-mapping` / `--dataset-class-mapping`
+  bundle's default (low) score threshold. Prediction classes are aligned to the dataset's by name
+  first (`align_prediction_classes`, e.g. 91 COCO model classes to `coco-2017`'s 80). `--model-class-mapping` / `--dataset-class-mapping`
   take a JSON file or inline JSON object and are applied with `class_mapper(method=
   "remove_undefined")`, as in the RF-DETR benchmark. Splits without ground truth only run
   inference. The predictions (annotations only) are written to the artifacts folder.

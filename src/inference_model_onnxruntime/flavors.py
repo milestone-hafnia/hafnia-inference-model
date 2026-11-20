@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from inference_model_core import PreprocessMeta, RawTensors, register_flavor
 from inference_model_core.classification import softmax, top1_classification
-from inference_model_core.detection import map_labels, select_anchor_detections, select_query_detections
+from inference_model_core.detection import select_anchor_detections, select_query_detections, task_label_mask
 from inference_model_core.primitives import bboxes_from_input_xyxy
 from inference_model_onnxruntime.engine import OnnxRuntimeModel
 
@@ -21,7 +21,6 @@ class AnchorBoxesNMSParams(BaseModel):
     topk_candidates: int = Field(gt=0, description="Highest scoring candidates kept per class before NMS")
     max_detections: int = Field(gt=0)
     background_index: int | None = Field(description="Score column of the background class, if any")
-    label_to_class_idx: List[int] = Field(description="Score column -> task class index, -1 = ignored")
 
 
 class BoxesScoresLabelsParams(BaseModel):
@@ -29,7 +28,6 @@ class BoxesScoresLabelsParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     score_threshold: float = Field(ge=0.0, le=1.0)
-    label_to_class_idx: List[int] = Field(description="Model label -> task class index, -1 = ignored")
 
 
 class RFDETRDetectionParams(BaseModel):
@@ -39,7 +37,6 @@ class RFDETRDetectionParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
     score_threshold: float = Field(ge=0.0, le=1.0)
     num_select: int = Field(gt=0, description="Highest scoring (query, class) pairs kept")
-    label_to_class_idx: List[int] = Field(description="Logit column -> task class index, -1 = ignored")
 
 
 class ClassificationLogitsParams(BaseModel):
@@ -68,9 +65,10 @@ class OnnxRuntimeTorchvisionSSD(OnnxRuntimeModel):
             max_detections=self.params.max_detections,
             background_index=self.params.background_index,
         )
-        class_indices, keep = map_labels(labels, self.params.label_to_class_idx)
+        task = self.model_info.tasks[0]
+        keep = task_label_mask(labels, len(task.get_class_names() or []))
         return bboxes_from_input_xyxy(  # type: ignore[return-value]
-            boxes[keep], scores[keep], class_indices, task=self.model_info.tasks[0], meta=meta
+            boxes[keep], scores[keep], labels[keep], task=task, meta=meta
         )
 
 
@@ -84,12 +82,13 @@ class OnnxRuntimeTorchvisionDetection(OnnxRuntimeModel):
     params: BoxesScoresLabelsParams
 
     def postprocess(self, outputs: RawTensors, meta: PreprocessMeta) -> List[Primitive]:
-        class_indices, keep = map_labels(outputs["labels"], self.params.label_to_class_idx)
+        task = self.model_info.tasks[0]
+        keep = task_label_mask(outputs["labels"], len(task.get_class_names() or []))
         return bboxes_from_input_xyxy(  # type: ignore[return-value]
             outputs["boxes"][keep],
             outputs["scores"][keep],
-            class_indices,
-            task=self.model_info.tasks[0],
+            outputs["labels"][keep],
+            task=task,
             meta=meta,
             score_threshold=self.params.score_threshold,
         )
@@ -127,12 +126,13 @@ class OnnxRuntimeRFDETRDetection(OnnxRuntimeModel):
             num_select=self.params.num_select,
             input_hw=(meta.input_height, meta.input_width),
         )
-        class_indices, keep = map_labels(labels, self.params.label_to_class_idx)
+        task = self.model_info.tasks[0]
+        keep = task_label_mask(labels, len(task.get_class_names() or []))
         return bboxes_from_input_xyxy(  # type: ignore[return-value]
             boxes[keep],
             scores[keep],
-            class_indices,
-            task=self.model_info.tasks[0],
+            labels[keep],
+            task=task,
             meta=meta,
             score_threshold=self.params.score_threshold,
         )

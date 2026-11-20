@@ -9,13 +9,12 @@ outputs one box per query ('dets', normalized center x, center y, width, height)
 Preprocessing follows RF-DETR's 'predict': resize to R x R (torchvision 'resize', antialiased on tensors), scale
 to [0, 1], the model's mean/std.
 
-Logit column i is class i of the task. Placeholder classes (COCO ids without a category, named 'NotDefined_*'
-in the trainer's archives) and the extra "no object" column are not task classes: 'label_to_class_idx' maps
-them to -1.
+Logit column i is class i of the task, also for COCO ids without a category (placeholder classes named
+'NotDefined_*', as in the trainer's archives). A model trained on N classes has one more column ("no object"),
+which is not a task class: the decoder drops labels beyond the task's classes.
 """
 
 import importlib.metadata
-import re
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Type, Union
@@ -38,6 +37,7 @@ from inference_model_core import (
     TensorInfo,
     write_bundle,
 )
+from model_exporters.class_names import detection_task, placeholder_class_name
 from model_exporters.onnx_export import DEFAULT_OPSET_VERSION
 from model_exporters.trainer_archive import open_trainer_archive
 
@@ -47,7 +47,6 @@ MODEL_FILENAME = "model.onnx"
 TASK_NAME = "object_detection"
 # Score threshold of trainer-object-detection's inference ('InferenceConfig.threshold')
 DEFAULT_SCORE_THRESHOLD = 0.05
-PLACEHOLDER_CLASS = re.compile(r"NotDefined_\d+")
 
 # Model name (as in trainer-object-detection's 'model_config.json') -> RF-DETR class. Detection models only.
 MODEL_CLASSES: Dict[str, Type[detr.RFDETR]] = {
@@ -63,7 +62,7 @@ def load_pretrained_model(model_name: str) -> Tuple[detr.RFDETR, List[str]]:
     column), with placeholders for COCO ids without a category."""
     model = _model_class(model_name)()
     n_columns = model.model_config.num_classes + 1
-    categories = [COCO_CLASSES.get(column, f"NotDefined_{column:03d}") for column in range(n_columns)]
+    categories = [COCO_CLASSES.get(column, placeholder_class_name(column)) for column in range(n_columns)]
     return model, categories
 
 
@@ -130,8 +129,8 @@ def export_rfdetr_detection(
 
     Args:
         model: RF-DETR model ('rfdetr.detr.RFDETR'). Moved to CPU by the export.
-        categories: Category name per logit column (column i = class i). Placeholders ('NotDefined_*') are not
-            task classes. Columns beyond the list (the "no object" column) are ignored.
+        categories: Class name per logit column (column i = class i), unique. Columns beyond the list (the
+            "no object" column) are not task classes.
         path_bundle: Output bundle, a '.zip' path or a directory.
         name: Model name stored in the model info.
         variant: Informational variant stored in the model info.
@@ -144,7 +143,9 @@ def export_rfdetr_detection(
         raise ValueError("Only RF-DETR detection models are supported (no segmentation or keypoint heads).")
     resolution = model.model.resolution
     n_queries, n_columns = model_config.num_queries, model_config.num_classes + 1
-    task, label_to_class_idx = task_from_categories(categories, n_columns)
+    if len(categories) > n_columns:
+        raise ValueError(f"Got {len(categories)} categories for a model with {n_columns} logit columns.")
+    task = detection_task(categories, TASK_NAME)
 
     with tempfile.TemporaryDirectory(prefix="rfdetr_export_") as tmp_dir:
         model.export(output_dir=tmp_dir, dynamic_batch=True, opset_version=opset_version, verbose=False)
@@ -180,7 +181,6 @@ def export_rfdetr_detection(
                 params={
                     "score_threshold": DEFAULT_SCORE_THRESHOLD,
                     "num_select": model.model.postprocess.num_select,
-                    "label_to_class_idx": label_to_class_idx,
                 },
             ),
             provenance={
@@ -193,21 +193,6 @@ def export_rfdetr_detection(
         )
         model_info = ModelBundleInfo(name=name, framework=FRAMEWORK, variant=variant, tasks=[task], runtime=runtime)
         return write_bundle(path_bundle, model_info, files={MODEL_FILENAME: path_onnx}, overwrite=overwrite)
-
-
-def task_from_categories(categories: List[str], n_columns: int) -> Tuple[TaskInfo, List[int]]:
-    """Task with the real classes, and the mapping from logit column to task class index (-1 = ignored)."""
-    if len(categories) > n_columns:
-        raise ValueError(f"Got {len(categories)} categories for a model with {n_columns} logit columns.")
-    class_names: List[str] = []
-    label_to_class_idx = [-1] * n_columns
-    for column, category in enumerate(categories):
-        if PLACEHOLDER_CLASS.fullmatch(category):
-            continue
-        label_to_class_idx[column] = len(class_names)
-        class_names.append(category)
-    task = TaskInfo.from_class_names(primitive=Bbox, class_names=class_names, name=TASK_NAME)
-    return task, label_to_class_idx
 
 
 def _model_class(model_name: str) -> Type[detr.RFDETR]:

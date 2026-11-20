@@ -25,7 +25,6 @@ import torch
 import torch.nn.functional as F
 import torchvision
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
-from hafnia.dataset.primitives import Bbox
 from torch import nn
 from torchvision.models import WeightsEnum, detection
 from torchvision.models.detection import transform as detection_transform
@@ -47,6 +46,7 @@ from inference_model_core import (
     TensorInfo,
     write_bundle,
 )
+from model_exporters.class_names import detection_task, placeholder_class_name
 from model_exporters.onnx_export import DEFAULT_OPSET_VERSION, onnx_export
 
 FRAMEWORK = "torchvision"
@@ -56,8 +56,8 @@ MODEL_FILENAME = "model.onnx"
 TASK_NAME = "object_detection"
 # Score threshold baked into full-graph exports. The runtime 'score_threshold' filters on top of it.
 FULL_GRAPH_MIN_SCORE = 0.001
-# Placeholder categories in torchvision's COCO label space that are not real classes
-IGNORED_CATEGORIES = ("__background__", "N/A")
+# Placeholder categories in torchvision's COCO label space, renamed to unique placeholder class names
+PLACEHOLDER_CATEGORIES = ("__background__", "N/A")
 
 # Graph parts to keep in floating point when quantizing, as ONNX node name patterns (see 'QuantizationHints').
 # Only the network (convolutions and linear layers) is quantized. Box decoding, softmax, resizing and NMS stay in
@@ -135,7 +135,8 @@ def export_torchvision_detection(
         overwrite: Replace an existing bundle.
         provenance: Extra provenance information stored in the model info.
     """
-    task, label_to_class_idx = task_from_categories(categories)
+    task = task_from_categories(categories)
+    n_labels = len(categories)
     provenance = {
         "exporter": __name__,
         "torch": torch.__version__,
@@ -147,9 +148,9 @@ def export_torchvision_detection(
     with tempfile.TemporaryDirectory(prefix="torchvision_export_") as tmp_dir:
         path_onnx = Path(tmp_dir) / MODEL_FILENAME
         if isinstance(model, SSD):
-            runtime = _export_ssd(model, path_onnx, label_to_class_idx, opset_version)
+            runtime = _export_ssd(model, path_onnx, n_labels, opset_version)
         elif isinstance(model, FasterRCNN):
-            runtime = _export_full_graph(model, path_onnx, label_to_class_idx, opset_version)
+            runtime = _export_full_graph(model, path_onnx, opset_version)
         else:
             raise ValueError(f"Unsupported model type '{type(model).__name__}'. Supported: SSD, FasterRCNN.")
         onnx.checker.check_model(path_onnx.as_posix())
@@ -159,14 +160,14 @@ def export_torchvision_detection(
         return write_bundle(path_bundle, model_info, files={MODEL_FILENAME: path_onnx}, overwrite=overwrite)
 
 
-def task_from_categories(categories: List[str]) -> Tuple[TaskInfo, List[int]]:
-    """Task with the real classes, and the mapping from model label to task class index (-1 = ignored)."""
-    class_names = [category for category in categories if category not in IGNORED_CATEGORIES]
-    label_to_class_idx = []
-    for category in categories:
-        label_to_class_idx.append(-1 if category in IGNORED_CATEGORIES else class_names.index(category))
-    task = TaskInfo.from_class_names(primitive=Bbox, class_names=class_names, name=TASK_NAME)
-    return task, label_to_class_idx
+def task_from_categories(categories: List[str]) -> TaskInfo:
+    """Task with one class per model label: '__background__' and the 'N/A' entries of torchvision's COCO
+    categories get unique placeholder names ('NotDefined_000', 'NotDefined_012', ...)."""
+    class_names = [
+        placeholder_class_name(label) if category in PLACEHOLDER_CATEGORIES else category
+        for label, category in enumerate(categories)
+    ]
+    return detection_task(class_names, TASK_NAME)
 
 
 class _SSDNetwork(nn.Module):
@@ -222,13 +223,13 @@ class _SSDNetwork(nn.Module):
         return torch.stack([x0, y0, x1, y1], dim=-1)
 
 
-def _export_ssd(ssd: SSD, path_onnx: Path, label_to_class_idx: List[int], opset_version: int) -> RuntimeInfo:
+def _export_ssd(ssd: SSD, path_onnx: Path, n_labels: int, opset_version: int) -> RuntimeInfo:
     transform = ssd.transform
     if transform.fixed_size is None:
         raise ValueError("Only SSD models with a fixed input size ('transform.fixed_size') are supported.")
     width, height = transform.fixed_size  # torchvision stores (width, height)
     network = _SSDNetwork(copy.deepcopy(ssd).eval(), height=height, width=width).eval()
-    n_anchors, n_labels = network.anchors.shape[0], len(label_to_class_idx)
+    n_anchors = network.anchors.shape[0]
 
     dummy = torch.zeros(2, 3, height, width)
     onnx_export(
@@ -271,7 +272,6 @@ def _export_ssd(ssd: SSD, path_onnx: Path, label_to_class_idx: List[int], opset_
                 "topk_candidates": ssd.topk_candidates,
                 "max_detections": ssd.detections_per_img,
                 "background_index": 0,
-                "label_to_class_idx": label_to_class_idx,
             },
         ),
     )
@@ -406,9 +406,7 @@ def _export_safe_ops() -> Iterator[None]:
             setattr(module, name, original)
 
 
-def _export_full_graph(
-    model: FasterRCNN, path_onnx: Path, label_to_class_idx: List[int], opset_version: int
-) -> RuntimeInfo:
+def _export_full_graph(model: FasterRCNN, path_onnx: Path, opset_version: int) -> RuntimeInfo:
     runtime_score_threshold = model.roi_heads.score_thresh
     export_model = copy.deepcopy(model).eval()
     export_model.roi_heads.score_thresh = min(FULL_GRAPH_MIN_SCORE, runtime_score_threshold)
@@ -460,7 +458,7 @@ def _export_full_graph(
         quantization_hints=FASTER_RCNN_QUANTIZATION_HINTS,
         postprocessing=PostprocessingInfo(
             decoder=DECODER_BOXES_SCORES_LABELS,
-            params={"score_threshold": runtime_score_threshold, "label_to_class_idx": label_to_class_idx},
+            params={"score_threshold": runtime_score_threshold},
         ),
         provenance={
             "graph_min_score": export_model.roi_heads.score_thresh,
