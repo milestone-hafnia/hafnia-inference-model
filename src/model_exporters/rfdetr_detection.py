@@ -23,12 +23,13 @@ import argparse
 import importlib.metadata
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Type, Union
 
+import numpy as np
 import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field, PrivateAttr
 from rfdetr import detr
 from rfdetr.util.coco_classes import COCO_CLASSES
 
@@ -63,9 +64,9 @@ MODEL_CLASSES: Dict[str, Type[detr.RFDETR]] = {
 }
 
 
-class RFDETRNetworkParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    model_name: str = Field(description=f"RF-DETR model. Options: {list(MODEL_CLASSES)}")
+class QueryPredictions(NamedTuple):
+    dets: np.ndarray  # (N, Q, 4) boxes as normalized (center x, center y, width, height)
+    labels: np.ndarray  # (N, Q, C) class logits
 
 
 @register_component
@@ -74,29 +75,27 @@ class RFDETRNetwork(TorchNetworkComponent):
     width, height) and 'labels' (N, Q, C) class logits per query."""
 
     type = "rfdetr_network"
-    params_model = RFDETRNetworkParams
-    params: RFDETRNetworkParams
-    input_ports = ("input",)
-    output_ports = ("dets", "labels")
-    model: detr.RFDETR
 
-    @classmethod
-    def build_model(cls, params: RFDETRNetworkParams, path_weights: Path, device: torch.device) -> detr.RFDETR:  # type: ignore[override]
+    model_name: str = Field(description=f"RF-DETR model. Options: {list(MODEL_CLASSES)}")
+
+    _model: detr.RFDETR = PrivateAttr()
+
+    def build_model(self, path_weights: Path, device: torch.device) -> detr.RFDETR:
         # RF-DETR unpickles its checkpoints. Bundles hold checkpoints of tensors and plain values only (see
         # 'write_checkpoint'): reading them here without unpickling objects rejects anything else.
         load_state_dict_file(path_weights)
-        model = _model_class(params.model_name)(pretrain_weights=str(path_weights))
+        model = _model_class(self.model_name)(pretrain_weights=str(path_weights))
         model.model.model = model.model.model.to(device).eval()
         model.model.device = device
         return model
 
-    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        outputs = self.model.model.model(inputs["input"])
-        return {"dets": outputs["pred_boxes"], "labels": outputs["pred_logits"]}
+    def forward(self, input: np.ndarray) -> QueryPredictions:  # 'input' is the tensor name of RF-DETR's export
+        outputs = self.call_model(self._model.model.model, input)
+        return QueryPredictions(dets=outputs["pred_boxes"], labels=outputs["pred_logits"])
 
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
         options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
-        model, dynamic_batch = self.model, options["dynamic_batch"]
+        model, dynamic_batch = self._model, options["dynamic_batch"]
         with tempfile.TemporaryDirectory(prefix="rfdetr_export_") as tmp_dir:
             model.export(
                 output_dir=tmp_dir, dynamic_batch=dynamic_batch, opset_version=options["opset_version"], verbose=False
@@ -204,32 +203,20 @@ def create_rfdetr_detection_bundle(
         raise ValueError(f"Got {len(categories)} categories for a model with {n_columns} logit columns.")
     task = detection_task(categories, TASK_NAME)
 
-    resize = {
-        "mode": "stretch",
-        "height": resolution,
-        "width": resolution,
-        "interpolation": "linear",
-        "antialias": True,
-    }
     components = [
-        LoadImage.create_info("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
-        ResizeImage.create_info(
-            "resize",
-            inputs={"image": "image_rgb"},
-            outputs={"image": "image_resized", "transform": "image_transform"},
-            params=resize,
+        LoadImage().connect("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        ResizeImage(
+            mode="stretch", height=resolution, width=resolution, interpolation="linear", antialias=True
+        ).connect(
+            "resize", inputs={"image": "image_rgb"}, outputs={"image": "image_resized", "transform": "image_transform"}
         ),
-        ImageToTensor.create_info(
-            "to_tensor",
-            inputs={"image": "image_resized"},
-            outputs={"tensor": "input_tensor"},
-            params={"scale": 1 / 255, "mean": list(model.means), "std": list(model.stds)},
+        ImageToTensor(scale=1 / 255, mean=list(model.means), std=list(model.stds)).connect(
+            "to_tensor", inputs={"image": "image_resized"}, outputs={"tensor": "input_tensor"}
         ),
-        RFDETRNetwork.create_info(
+        RFDETRNetwork(model_name=model_name).connect(
             "network",
             inputs={"input": "input_tensor"},
             outputs={"dets": "query_boxes", "labels": "query_logits"},
-            params={"model_name": model_name},
             files=[WEIGHTS_FILE],
             batched=True,
             conversions={
@@ -246,17 +233,15 @@ def create_rfdetr_detection_bundle(
                 **(provenance or {}),
             },
         ),
-        QueryTopK.create_info(
+        QueryTopK(num_select=model.model.postprocess.num_select).connect(
             "topk",
             inputs={"boxes": "query_boxes", "logits": "query_logits", "transform": "image_transform"},
             outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
-            params={"num_select": model.model.postprocess.num_select},
         ),
-        DetectionsToBboxes.create_info(
+        DetectionsToBboxes(task_name=TASK_NAME, score_threshold=DEFAULT_SCORE_THRESHOLD).connect(
             "to_bboxes",
             inputs={"boxes": "boxes", "scores": "scores", "labels": "labels", "transform": "image_transform"},
             outputs={"predictions": "predictions"},
-            params={"task_name": TASK_NAME, "score_threshold": DEFAULT_SCORE_THRESHOLD},
         ),
     ]
     model_info = ModelBundleInfo(

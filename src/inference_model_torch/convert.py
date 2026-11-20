@@ -7,7 +7,7 @@ stored export options (e.g. opset, dynamic batch axis).
 import onnx
 import torch
 
-from inference_model_core import ComponentInfo, ConversionRequest, LoadOptions, get_component_class, register_converter
+from inference_model_core import ComponentInfo, ConversionRequest, get_component_class, register_converter
 from inference_model_core.convert import TARGET_ONNX
 from inference_model_core.model_info import RUNTIME_ONNX, RUNTIME_TORCH
 from inference_model_core.network import NETWORK_TYPE
@@ -22,7 +22,7 @@ def convert_torch_to_onnx(request: ConversionRequest) -> ComponentInfo:
     component_class = get_component_class(source.type, RUNTIME_TORCH)
     if not issubclass(component_class, TorchNetworkComponent):
         raise TypeError(f"Component '{source.name}' ('{source.type}') is not a torch network and has no ONNX export.")
-    component = component_class.load(source, request.model_info, request.path_source_dir, LoadOptions())
+    component = component_class.load(source, request.model_info, request.path_source_dir)
 
     path_file = f"{source.name}/{ONNX_MODEL_FILENAME}"
     path_onnx = request.path_output_dir / path_file

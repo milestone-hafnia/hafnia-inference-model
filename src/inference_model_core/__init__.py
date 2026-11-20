@@ -11,6 +11,7 @@ from inference_model_core.bundle import (
 )
 from inference_model_core.component import (
     Component,
+    ComponentContext,
     ComponentKey,
     LoadOptions,
     NumpyComponent,
@@ -34,6 +35,7 @@ from inference_model_core.preprocessing import ImageTransform, load_image_rgb
 __all__ = [
     "MODEL_INFO_FILENAME",
     "Component",
+    "ComponentContext",
     "ComponentInfo",
     "ComponentKey",
     "ConversionInfo",

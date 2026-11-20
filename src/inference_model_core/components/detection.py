@@ -1,24 +1,22 @@
 """Detection components: decoders that select detections, and conversion to 'Bbox' primitives."""
 
-from typing import Any, Dict
+from typing import NamedTuple, Optional
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from hafnia.dataset.hafnia_dataset_types import TaskInfo
+from pydantic import Field, PrivateAttr
 
 from inference_model_core.component import NumpyComponent, register_component
+from inference_model_core.components.outputs import Predictions
 from inference_model_core.detection import select_anchor_detections, select_query_detections, task_label_mask
-from inference_model_core.model_info import ComponentInfo, ModelBundleInfo
 from inference_model_core.preprocessing import ImageTransform
 from inference_model_core.primitives import bboxes_from_input_xyxy
 
 
-class AnchorNMSParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    score_threshold: float = Field(ge=0.0, le=1.0)
-    nms_iou_threshold: float = Field(ge=0.0, le=1.0)
-    topk_candidates: int = Field(gt=0, description="Highest scoring candidates kept per class before NMS")
-    max_detections: int = Field(gt=0)
-    background_index: int | None = Field(description="Score column of the background class, if any")
+class Detections(NamedTuple):
+    boxes: np.ndarray  # (N, 4) xyxy pixels
+    scores: np.ndarray  # (N,)
+    labels: np.ndarray  # (N,)
 
 
 @register_component
@@ -29,28 +27,24 @@ class AnchorNMS(NumpyComponent):
     """
 
     type = "anchor_nms"
-    params_model = AnchorNMSParams
-    params: AnchorNMSParams
-    input_ports = ("boxes", "scores")
-    output_ports = ("boxes", "scores", "labels")
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        params = self.params
-        boxes, scores, labels = select_anchor_detections(
-            boxes=np.asarray(inputs["boxes"]),
-            scores=np.asarray(inputs["scores"]),
-            score_threshold=params.score_threshold,
-            nms_iou_threshold=params.nms_iou_threshold,
-            topk_candidates=params.topk_candidates,
-            max_detections=params.max_detections,
-            background_index=params.background_index,
+    score_threshold: float = Field(ge=0.0, le=1.0)
+    nms_iou_threshold: float = Field(ge=0.0, le=1.0)
+    topk_candidates: int = Field(gt=0, description="Highest scoring candidates kept per class before NMS")
+    max_detections: int = Field(gt=0)
+    background_index: Optional[int] = Field(description="Score column of the background class, if any")
+
+    def forward(self, boxes: np.ndarray, scores: np.ndarray) -> Detections:
+        detections = select_anchor_detections(
+            boxes=np.asarray(boxes),
+            scores=np.asarray(scores),
+            score_threshold=self.score_threshold,
+            nms_iou_threshold=self.nms_iou_threshold,
+            topk_candidates=self.topk_candidates,
+            max_detections=self.max_detections,
+            background_index=self.background_index,
         )
-        return {"boxes": boxes, "scores": scores, "labels": labels}
-
-
-class QueryTopKParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    num_select: int = Field(gt=0, description="Highest scoring (query, class) pairs kept")
+        return Detections(*detections)
 
 
 @register_component
@@ -62,26 +56,17 @@ class QueryTopK(NumpyComponent):
     """
 
     type = "query_topk"
-    params_model = QueryTopKParams
-    params: QueryTopKParams
-    input_ports = ("boxes", "logits", "transform")
-    output_ports = ("boxes", "scores", "labels")
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        transform: ImageTransform = inputs["transform"]
-        boxes, scores, labels = select_query_detections(
-            boxes_cxcywh=np.asarray(inputs["boxes"]),
-            logits=np.asarray(inputs["logits"]),
-            num_select=self.params.num_select,
+    num_select: int = Field(gt=0, description="Highest scoring (query, class) pairs kept")
+
+    def forward(self, boxes: np.ndarray, logits: np.ndarray, transform: ImageTransform) -> Detections:
+        detections = select_query_detections(
+            boxes_cxcywh=np.asarray(boxes),
+            logits=np.asarray(logits),
+            num_select=self.num_select,
             input_hw=(transform.input_height, transform.input_width),
         )
-        return {"boxes": boxes, "scores": scores, "labels": labels}
-
-
-class DetectionsToBboxesParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    task_name: str = Field(description="Task of the model info the detections belong to")
-    score_threshold: float = Field(default=0.0, ge=0.0, le=1.0, description="Detections below it are dropped")
+        return Detections(*detections)
 
 
 @register_component
@@ -94,33 +79,37 @@ class DetectionsToBboxes(NumpyComponent):
     """
 
     type = "detections_to_bboxes"
-    params_model = DetectionsToBboxesParams
-    params: DetectionsToBboxesParams
-    input_ports = ("boxes", "scores", "labels")
-    optional_input_ports = ("transform", "image")
-    output_ports = ("predictions",)
 
-    def __init__(self, info: ComponentInfo, model_info: ModelBundleInfo):
-        super().__init__(info, model_info)
-        if ("transform" in info.inputs) == ("image" in info.inputs):
-            raise ValueError(f"Component '{info.name}' needs either the 'transform' or the 'image' input.")
-        self.task = model_info.get_task_by_name(self.params.task_name)
-        self.n_classes = len(self.task.get_class_names() or [])
+    task_name: str = Field(description="Task of the model info the detections belong to")
+    score_threshold: float = Field(default=0.0, ge=0.0, le=1.0, description="Detections below it are dropped")
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        if "transform" in inputs:
-            transform = inputs["transform"]
-        else:
-            height, width = inputs["image"].shape[:2]
-            transform = ImageTransform.identity(height, width)
-        boxes, scores, labels = (np.asarray(inputs[port]) for port in ("boxes", "scores", "labels"))
-        keep = task_label_mask(labels, self.n_classes)
+    _task: TaskInfo = PrivateAttr()
+
+    def setup(self) -> None:
+        if ("transform" in self.info.inputs) == ("image" in self.info.inputs):
+            raise ValueError(f"Component '{self.info.name}' needs either the 'transform' or the 'image' input.")
+        self._task = self.context.model_info.get_task_by_name(self.task_name)
+
+    def forward(
+        self,
+        boxes: np.ndarray,
+        scores: np.ndarray,
+        labels: np.ndarray,
+        transform: Optional[ImageTransform] = None,
+        image: Optional[np.ndarray] = None,
+    ) -> Predictions:
+        if transform is None:
+            if image is None:
+                raise ValueError("Either 'transform' or 'image' is needed to map the boxes to the original image.")
+            transform = ImageTransform.identity(*image.shape[:2])
+        boxes, scores, labels = np.asarray(boxes), np.asarray(scores), np.asarray(labels)
+        keep = task_label_mask(labels, len(self._task.get_class_names() or []))
         predictions = bboxes_from_input_xyxy(
             boxes[keep],
             scores[keep],
             labels[keep],
-            task=self.task,
+            task=self._task,
             transform=transform,
-            score_threshold=self.params.score_threshold,
+            score_threshold=self.score_threshold,
         )
-        return {"predictions": predictions}
+        return Predictions(predictions)  # type: ignore[arg-type]

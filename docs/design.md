@@ -135,7 +135,42 @@ exactly once.
 
 ### 3.3 Components
 
-A component **implementation** is a class for one (type, runtime, engine):
+A component is **one class**: a pydantic model whose fields are its configuration and whose
+`forward` method is the implementation. The signature of `forward` names the ports: the parameters
+are the inputs (optional when the default is `None`) and the fields of the returned `NamedTuple`
+the outputs.
+
+```python
+class ResizedImage(NamedTuple):
+    image: np.ndarray
+    transform: ImageTransform
+
+
+@register_component
+class ResizeImage(NumpyComponent):
+    type = "resize_image"
+
+    mode: ResizeMode  # configuration = fields, stored as 'params' in the model info
+    height: int
+    width: int
+    antialias: bool = False
+
+    def forward(self, image: np.ndarray) -> ResizedImage:  # ports = signature
+        return ResizedImage(*resize_image(image, self.mode, self.height, self.width, antialias=self.antialias))
+```
+
+- A component runs on its own, `ResizeImage(mode="stretch", height=320, width=320).forward(image)`,
+  and is put into a graph with `.connect("resize", inputs={...}, outputs={...})`, which gives its
+  component info.
+- **Two exceptions to "everything is in the class"**, both for things that are not configuration:
+  - Model files and the task of the model info are read in `setup()`, when the graph is loaded,
+    and kept as private attributes. A network is therefore either configured or loaded.
+  - A `network`'s ports are its tensor names, which are configuration, so its `forward` takes and
+    returns the tensors by name (`**tensors`).
+- Changed on 2026-11-20 from a first version with three parts per component (a parameter model, a
+  class with port tuples and a `run` on dictionaries).
+
+An **implementation** is a component class for one (type, runtime, engine):
 
 | Type | Runtime | Engine | Where |
 |---|---|---|---|
@@ -154,10 +189,9 @@ A component **implementation** is a class for one (type, runtime, engine):
 - **Networks are generic.** A `network` is a tensor graph in model files whose ports are its
   tensor names. The engines know nothing about model families: adding a family needs no engine
   code.
-- **Processing components are thin wrappers** with typed parameters around plain NumPy functions
-  (`preprocessing.py`, `detection.py`, `classification.py`, `primitives.py`), which are tested on
-  their own. They don't depend on torch: an OpenVINO serving image shouldn't need PyTorch.
-- **Torch networks are stored by reference**: the weights plus the parameters that name the code
+- **Processing components are thin wrappers** around plain NumPy functions (`preprocessing.py`,
+  `detection.py`, `classification.py`, `primitives.py`), which are tested on their own. They don't depend on torch: an OpenVINO serving image shouldn't need PyTorch.
+- **Torch networks are stored by reference**: the weights plus the fields that name the code
   building the module (e.g. `architecture: ssdlite320_mobilenet_v3_large`). They are the source
   format of a model. Loading one needs torch and the model's library; the ONNX and OpenVINO
   versions are self-contained.
@@ -227,7 +261,7 @@ Load-time settings, none of them stored in the bundle:
   others on their default engine. It is an error if no component can.
 - **`params`**: overrides of component parameters. `{"score_threshold": 0.5}` applies to every
   component that has the parameter, `{"nms.score_threshold": 0.5}` to one. They are validated by
-  the component's typed parameter model, and an unknown name is an error.
+  the component's fields, and an unknown name is an error.
 - **`device`, `num_threads`** for all engines, and **`engine_options`** per engine, e.g.
   `{"openvino": {"performance_hint": "LATENCY"}}`.
 
@@ -273,17 +307,18 @@ convert_bundle(path_source, path_bundle, target="openvino_int8", calibration_inp
 All in `src/inference_model_core`.
 
 ```python
-class Component(ABC):                       # component.py
+class Component(BaseModel, ABC):            # component.py
     type: ClassVar[str]; runtime: ClassVar[str]; engine: ClassVar[str]
-    params_model: ClassVar[Type[BaseModel]]             # typed parameters
-    input_ports, optional_input_ports, output_ports     # checked against the component info
+    # fields of a subclass = its configuration
 
+    def forward(self, ...) -> NamedTuple: ...      # the implementation; its signature names the ports
+    def ports(self) -> Ports: ...                  # from the signature (networks: from their tensors)
+    def setup(self) -> None: ...                   # read files, look up a task (uses self.context)
+    def files(self) -> Dict[str, FileSource]: ...  # for writing the bundle
+    def connect(self, name, inputs, outputs, files=None, batched=False, conversions=None,
+                provenance=None) -> ComponentInfo: ...             # the component as a step of a graph
     @classmethod
-    def load(cls, info, model_info, path_dir, options) -> Self: ...   # read files of the bundle
-    def files(self) -> Dict[str, FileSource]: ...                     # for writing the bundle
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]: ...      # port -> value
-    @classmethod
-    def create_info(cls, name, inputs, outputs, params=None, ...) -> ComponentInfo: ...
+    def load(cls, info, model_info, path_dir=None, options=None, params=None) -> Self: ...
 
 class ModelGraph:                           # graph.py
     @classmethod
@@ -308,10 +343,11 @@ Converter = Callable[[ConversionRequest], ComponentInfo]
   unchanged. `get_model_info()` returns a `ModelInfo` (with `tasks`), as Hafnia expects.
 - `ModelGraph` is the general interface: any inputs and outputs. `GraphInferenceModel` requires
   the input `image` and an output `predictions`.
-- `NetworkComponent` (`network.py`) is the base class of file-based networks: it checks the ports
-  against the tensors, keeps the files for writing, and compares the model info with the stored
-  graph at load time. `TorchNetworkComponent` (`inference_model_torch/component.py`) is the base
-  class of torch networks: device handling, NumPy ↔ tensors, and the `export_onnx` hook.
+- `NetworkComponent` (`network.py`) is the base class of file-based networks: its fields are the
+  tensors and the precision, it keeps the files for writing, and compares the model info with the
+  stored graph at load time. `TorchNetworkComponent` (`inference_model_torch/component.py`) is the
+  base class of torch networks: it builds the module in `setup()`, runs it on NumPy arrays
+  (`call_model`) and has the `export_onnx` hook.
 - A converter gets a `ConversionRequest` (the component, its files, the merged options, a
   calibration feed) and returns the component info of the converted component, with the same name
   and data keys.
@@ -436,7 +472,7 @@ package-openvino/
 │   ├── inference_model_core/        # → later: hafnia
 │   │   ├── model_info.py            #   ModelBundleInfo, GraphInfo, ComponentInfo, ConversionInfo
 │   │   ├── bundle.py                #   read/write zip|dir, model_info.json I/O
-│   │   ├── component.py             #   Component base class, registry, load options
+│   │   ├── component.py             #   Component (pydantic model + forward), registry, load options
 │   │   ├── network.py               #   NetworkComponent: base class of file-based networks
 │   │   ├── graph.py                 #   ModelGraph: load, write, run, run_batch
 │   │   ├── inference_model.py       #   GraphInferenceModel, inference_model_from_path

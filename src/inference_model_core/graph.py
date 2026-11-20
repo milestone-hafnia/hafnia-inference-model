@@ -17,6 +17,7 @@ from inference_model_core.bundle import MODEL_INFO_FILENAME, FileSource, PathLik
 from inference_model_core.component import (
     Component,
     LoadOptions,
+    call_component,
     find_component_class,
     get_component_class,
 )
@@ -80,12 +81,10 @@ class ModelGraph:
             if unknown_engines:
                 raise ValueError(f"'engine_options' are given for engines {unknown_engines}, which run no component.")
             param_overrides = _split_param_overrides(infos, classes, params or {})
-            components = []
-            for info in infos:
-                overrides = param_overrides[info.name]
-                if overrides:
-                    info = info.model_copy(update={"params": {**info.params, **overrides}})
-                components.append(classes[info.name].load(info, model_info, path_dir, options))
+            components = [
+                classes[info.name].load(info, model_info, path_dir, options, params=param_overrides[info.name])
+                for info in infos
+            ]
         return cls(model_info, components)
 
     def write(self, path_bundle: PathLike, overwrite: bool = False) -> Path:
@@ -160,7 +159,7 @@ def _split_param_overrides(
 ) -> Dict[str, Dict[str, Any]]:
     """Parameter overrides per component, from 'param' (all components with it) and 'component.param' keys."""
     overrides: Dict[str, Dict[str, Any]] = {info.name: {} for info in infos}
-    parameters = {name: set(component_class.params_model.model_fields) for name, component_class in classes.items()}
+    parameters = {name: set(component_class.model_fields) for name, component_class in classes.items()}
     for key, value in params.items():
         component_name, _, param_name = key.rpartition(".")
         targets = (
@@ -195,16 +194,15 @@ def _run_component(component: Component, data: Mapping[str, List[Any]], batch_si
 
     if not info.batched:
         for i in range(batch_size):
-            collect(component.run({port: data[key][i] for port, key in info.inputs.items()}), n_samples=None)
+            inputs = {port: data[key][i] for port, key in info.inputs.items()}
+            collect(call_component(component, inputs), n_samples=None)
         return results
 
     step = component.max_batch_size or max(batch_size, 1)
     for start in range(0, batch_size, step):
         stop = min(start + step, batch_size)
-        collect(
-            component.run({port: _stack(info, port, data[key][start:stop]) for port, key in info.inputs.items()}),
-            n_samples=stop - start,
-        )
+        inputs = {port: _stack(info, port, data[key][start:stop]) for port, key in info.inputs.items()}
+        collect(call_component(component, inputs), n_samples=stop - start)
     return results
 
 

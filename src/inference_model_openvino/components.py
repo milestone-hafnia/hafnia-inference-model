@@ -9,8 +9,9 @@ from typing import Any, Dict, List, Set
 
 import numpy as np
 import openvino as ov
+from pydantic import PrivateAttr
 
-from inference_model_core import ComponentInfo, LoadOptions, ModelBundleInfo, register_component
+from inference_model_core import register_component
 from inference_model_core.model_info import RUNTIME_ONNX, RUNTIME_OPENVINO
 from inference_model_core.network import NetworkComponent
 
@@ -21,30 +22,15 @@ PERFORMANCE_HINTS = ("LATENCY", "THROUGHPUT", "CUMULATIVE_THROUGHPUT")
 class _OpenVINONetwork(NetworkComponent):
     engine = ENGINE
 
-    def __init__(
-        self,
-        info: ComponentInfo,
-        model_info: ModelBundleInfo,
-        compiled_model: ov.CompiledModel,
-        model_files: Dict[str, bytes],
-    ):
-        super().__init__(info, model_info, model_files)
-        self.compiled_model = compiled_model
-        self._infer_request = compiled_model.create_infer_request()
-        if len(compiled_model.inputs) != len(self.params.input_tensors):
-            raise ValueError(
-                f"Component '{info.name}' must list all inputs of its model: {_all_names(compiled_model.inputs)}."
-            )
-        self.check_graph_tensors(_all_names(compiled_model.inputs), _all_names(compiled_model.outputs))
-        # A graph tensor can have several names: find the port of each connected output by the model info's name
-        self._output_ports = {name: _port_named(compiled_model.outputs, name) for name in self.output_names}
+    _compiled_model: ov.CompiledModel = PrivateAttr()
+    _infer_request: ov.InferRequest = PrivateAttr()
+    # A graph tensor can have several names: the port of each connected output, by the model info's name
+    _output_ports: Dict[str, ov.Output] = PrivateAttr()
 
-    @classmethod
-    def load(
-        cls, info: ComponentInfo, model_info: ModelBundleInfo, path_dir: Path, options: LoadOptions
-    ) -> "_OpenVINONetwork":
+    def load_network(self, path_model: Path) -> None:
         """Options: 'device' is an OpenVINO device name (e.g. 'CPU', 'GPU', 'NPU', 'AUTO'), 'num_threads' the
         inference threads. Engine option 'performance_hint': 'LATENCY', 'THROUGHPUT' or 'CUMULATIVE_THROUGHPUT'."""
+        options = self.context.options
         engine_options = options.for_engine(ENGINE)
         performance_hint = engine_options.pop("performance_hint", None)
         if engine_options:
@@ -60,15 +46,19 @@ class _OpenVINONetwork(NetworkComponent):
         core = ov.Core()
         # Without mmap the weights are read into memory, so the extracted bundle can be deleted after loading
         core.set_property({"ENABLE_MMAP": False})
-        model_files = {path: (path_dir / path).read_bytes() for path in info.files}
-        # Read from the file path so 'model.bin' (IR) and external data files (ONNX) are found
-        model = core.read_model(path_dir / info.files[0])
-        compiled_model = core.compile_model(model, options.device, config)
-        return cls(info, model_info, compiled_model, model_files)
+        compiled_model = core.compile_model(core.read_model(path_model), options.device, config)
+        self.check_graph_tensors(
+            _all_names(compiled_model.inputs),
+            _all_names(compiled_model.outputs),
+            n_graph_inputs=len(compiled_model.inputs),
+        )
+        self._output_ports = {name: _port_named(compiled_model.outputs, name) for name in self.output_names}
+        self._compiled_model = compiled_model
+        self._infer_request = compiled_model.create_infer_request()
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def forward(self, **tensors: Any) -> Dict[str, Any]:
         # 'share_outputs=False' (default) copies the outputs, so they stay valid after the next inference
-        results = self._infer_request.infer({name: np.asarray(value) for name, value in inputs.items()})
+        results = self._infer_request.infer({name: np.asarray(value) for name, value in tensors.items()})
         return {name: results[port] for name, port in self._output_ports.items()}
 
 

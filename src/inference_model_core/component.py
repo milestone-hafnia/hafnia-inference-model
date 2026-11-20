@@ -1,20 +1,35 @@
 """Components: the steps of a model graph, and the registry of their implementations.
 
-A component implementation is a 'Component' subclass for one (type, runtime, engine), e.g. ('network', 'onnx',
+A component is a pydantic model: its fields are its configuration (stored as 'params' in the model info) and its
+'forward' method is the implementation. The signature of 'forward' names the ports: the parameters are the
+inputs and the fields of the returned 'NamedTuple' the outputs.
+
+    class ResizeImage(NumpyComponent):
+        type = "resize_image"
+        height: int
+        width: int
+
+        def forward(self, image: np.ndarray) -> ResizedImage:  # 'ResizedImage(image, transform)'
+            ...
+
+An implementation is a 'Component' subclass for one (type, runtime, engine), e.g. ('network', 'onnx',
 'onnxruntime') or ('resize_image', 'numpy', 'numpy'). Implementations register themselves with the
 'register_component' class decorator. Separately installed packages list theirs in the
 'hafnia.inference_model_components' entry point group, named '<type>/<runtime>/<engine>': they are imported only
 when a graph needs them, so loading an ONNX bundle never imports torch.
 """
 
+import functools
 import importlib
+import inspect
+import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Mapping, NamedTuple, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, ClassVar, Dict, List, Mapping, NamedTuple, Optional, Tuple, Type, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from inference_model_core.bundle import FileSource
 from inference_model_core.model_info import (
@@ -61,113 +76,169 @@ class LoadOptions:
         return dict(self.engine_options.get(engine, {}))
 
 
-class NoParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+@dataclass(frozen=True)
+class ComponentContext:
+    """The place of a component in a loaded graph."""
+
+    info: ComponentInfo  # Name, connections and files of the component
+    model_info: ModelBundleInfo
+    # Directory with the extracted bundle. It can be temporary: files have to be read in 'Component.setup'
+    path_dir: Optional[Path] = None
+    options: LoadOptions = field(default_factory=LoadOptions)
+
+
+class Ports(NamedTuple):
+    inputs: Tuple[str, ...]
+    optional_inputs: Tuple[str, ...]
+    outputs: Tuple[str, ...]
 
 
 T = TypeVar("T", bound="Component")
 
 
-class Component(ABC):
+class Component(BaseModel, ABC):
     """Base class of all component implementations.
 
-    Subclasses set 'type', 'runtime' and 'engine', their typed 'params_model' and their ports, and implement
-    'run'. Components with files also implement 'load' and 'files'.
+    Subclasses set 'type', 'runtime' and 'engine', declare their configuration as fields and implement
+    'forward'. Components that need more than their configuration to run (model files, a task of the model
+    info) get it in 'setup'.
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: ClassVar[str]
     runtime: ClassVar[str]
     engine: ClassVar[str]
-    params_model: ClassVar[Type[BaseModel]] = NoParams
-    # Port names. Components with ports that depend on their parameters (e.g. tensor names) override 'check_ports'.
-    input_ports: ClassVar[Tuple[str, ...]] = ()
-    optional_input_ports: ClassVar[Tuple[str, ...]] = ()
-    output_ports: ClassVar[Tuple[str, ...]] = ()
 
-    def __init__(self, info: ComponentInfo, model_info: ModelBundleInfo):
-        cls = type(self)
-        if (info.type, info.runtime) != (cls.type, cls.runtime):
-            raise ValueError(
-                f"'{cls.__name__}' implements type '{cls.type}' on runtime '{cls.runtime}', but component "
-                f"'{info.name}' has type '{info.type}' on runtime '{info.runtime}'."
-            )
-        self.info = info
-        self.model_info = model_info
-        self.params: Any = cls.params_model.model_validate(info.params)
-        self.check_ports()
+    _context: Optional[ComponentContext] = PrivateAttr(default=None)
 
     @classmethod
     def key(cls) -> ComponentKey:
         return ComponentKey(type=cls.type, runtime=cls.runtime, engine=cls.engine)
 
-    def check_ports(self) -> None:
-        """The component info must connect all required inputs and only known ports."""
-        cls = type(self)
-        connected_inputs, connected_outputs = set(self.info.inputs), set(self.info.outputs)
-        missing = sorted(set(cls.input_ports) - connected_inputs)
-        unknown_inputs = sorted(connected_inputs - set(cls.input_ports) - set(cls.optional_input_ports))
-        unknown_outputs = sorted(connected_outputs - set(cls.output_ports))
-        if missing or unknown_inputs or unknown_outputs:
-            raise ValueError(
-                f"Component '{self.info.name}' ('{cls.type}') has inputs {list(cls.input_ports)}, optional inputs "
-                f"{list(cls.optional_input_ports)} and outputs {list(cls.output_ports)}. Missing inputs: {missing}, "
-                f"unknown inputs: {unknown_inputs}, unknown outputs: {unknown_outputs}."
-            )
+    # --- implementation ------------------------------------------------------------------------------
+    @abstractmethod
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """Compute the outputs from the inputs.
 
-    # --- storage -------------------------------------------------------------------------------------
-    @classmethod
-    def load(cls: Type[T], info: ComponentInfo, model_info: ModelBundleInfo, path_dir: Path, options: LoadOptions) -> T:
-        """Create the component of a bundle extracted at 'path_dir'. The default is for components without
-        files. Files have to be read here: 'path_dir' can be a temporary directory."""
-        if info.files:
-            raise NotImplementedError(f"'{cls.__name__}' has files and must implement 'load'.")
-        return cls(info, model_info)
+        Subclasses name their input ports as parameters (a parameter with default 'None' is an optional port)
+        and return a 'NamedTuple' whose fields are the output ports. Values are for one sample, or for a batch
+        stacked on a new first axis when the component is connected as 'batched'.
+        """
+
+    def ports(self) -> Ports:
+        """The ports of the component, by default read from the signature of 'forward'. Components with ports
+        that depend on their configuration (e.g. tensor names) override this."""
+        return signature_ports(type(self))
+
+    def setup(self) -> None:
+        """Prepare for running in a graph, with 'self.context': read the component's files, look up a task.
+        Called once, when the graph is loaded."""
 
     def files(self) -> Dict[str, FileSource]:
         """The component's bundle files (path relative to the bundle -> content), for writing the bundle."""
         return {}
 
-    # --- execution -----------------------------------------------------------------------------------
     @property
     def max_batch_size(self) -> Optional[int]:
         """Largest batch a batched component takes in one call. 'None' for no limit."""
         return None
 
-    @abstractmethod
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Compute the outputs (port -> value) from the connected inputs (port -> value).
-
-        Values are for one sample, or for a batch stacked on a new first axis when the component is 'batched'.
-        """
-
-    # --- building graphs -----------------------------------------------------------------------------
-    @classmethod
-    def create_info(
-        cls,
+    # --- in a graph ----------------------------------------------------------------------------------
+    def connect(
+        self,
         name: str,
         inputs: Dict[str, str],
         outputs: Dict[str, str],
-        params: Union[BaseModel, Dict[str, Any], None] = None,
         files: Optional[List[str]] = None,
         batched: bool = False,
         conversions: Optional[Dict[str, ConversionInfo]] = None,
         provenance: Optional[Dict[str, Any]] = None,
     ) -> ComponentInfo:
-        """Component info of this implementation, with validated parameters."""
-        params_dict = params.model_dump(mode="json") if isinstance(params, BaseModel) else dict(params or {})
-        validated_params = cls.params_model.model_validate(params_dict)
-        return ComponentInfo(
+        """The component as a step of a graph: its component info for the model info.
+
+        Args:
+            name: Unique name in the graph.
+            inputs: Input port -> data dictionary key it reads.
+            outputs: Output port -> data dictionary key it writes.
+            files: Files of the component, relative to the bundle.
+            batched: Call the component once per batch instead of once per sample.
+            conversions: Conversion target -> support and export options.
+            provenance: Where the component comes from.
+        """
+        info = ComponentInfo(
             name=name,
-            type=cls.type,
-            runtime=cls.runtime,
+            type=type(self).type,
+            runtime=type(self).runtime,
             inputs=inputs,
             outputs=outputs,
-            params=validated_params.model_dump(mode="json"),
+            params=self.model_dump(mode="json"),
             files=files or [],
             batched=batched,
             conversions=conversions or {},
             provenance=provenance,
         )
+        self.check_connections(info)
+        return info
+
+    @classmethod
+    def load(
+        cls: Type[T],
+        info: ComponentInfo,
+        model_info: ModelBundleInfo,
+        path_dir: Optional[Path] = None,
+        options: Optional[LoadOptions] = None,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> T:
+        """Create the component of a model info and set it up to run.
+
+        Args:
+            info: Component info of the model info.
+            model_info: The model info.
+            path_dir: Directory with the extracted bundle, for components with files.
+            options: Load-time settings of the engines.
+            params: Overrides of the configuration in 'info'.
+        """
+        if (info.type, info.runtime) != (cls.type, cls.runtime):
+            raise ValueError(
+                f"'{cls.__name__}' implements type '{cls.type}' on runtime '{cls.runtime}', but component "
+                f"'{info.name}' has type '{info.type}' on runtime '{info.runtime}'."
+            )
+        component = cls.model_validate({**info.params, **(params or {})})
+        context = ComponentContext(
+            info=info, model_info=model_info, path_dir=path_dir, options=options or LoadOptions()
+        )
+        return component.bind(context)
+
+    def bind(self: T, context: ComponentContext) -> T:
+        """Give the component its place in a graph and set it up."""
+        self.check_connections(context.info)
+        self._context = context
+        self.setup()
+        return self
+
+    @property
+    def context(self) -> ComponentContext:
+        if self._context is None:
+            raise RuntimeError(f"This '{type(self).type}' component is not part of a loaded graph (see 'load').")
+        return self._context
+
+    @property
+    def info(self) -> ComponentInfo:
+        return self.context.info
+
+    def check_connections(self, info: ComponentInfo) -> None:
+        """The component info must connect all required inputs and only known ports."""
+        ports = self.ports()
+        missing = sorted(set(ports.inputs) - set(info.inputs))
+        unknown_inputs = sorted(set(info.inputs) - set(ports.inputs) - set(ports.optional_inputs))
+        unknown_outputs = sorted(set(info.outputs) - set(ports.outputs))
+        if missing or unknown_inputs or unknown_outputs:
+            raise ValueError(
+                f"Component '{info.name}' ('{type(self).type}') has inputs {list(ports.inputs)}, optional inputs "
+                f"{list(ports.optional_inputs)} and outputs {list(ports.outputs)}. Missing inputs: {missing}, "
+                f"unknown inputs: {unknown_inputs}, unknown outputs: {unknown_outputs}."
+            )
 
 
 class NumpyComponent(Component):
@@ -175,6 +246,45 @@ class NumpyComponent(Component):
 
     runtime = RUNTIME_NUMPY
     engine = RUNTIME_NUMPY
+
+
+@functools.lru_cache(maxsize=None)
+def signature_ports(component_class: Type[Component]) -> Ports:
+    """Ports of a component class from the signature of its 'forward': the parameters are the inputs (optional
+    with default 'None') and the fields of the returned 'NamedTuple' the outputs."""
+    name = f"'{component_class.__name__}.forward'"
+    inputs, optional_inputs = [], []
+    for parameter in list(inspect.signature(component_class.forward).parameters.values())[1:]:
+        if parameter.kind not in (parameter.POSITIONAL_OR_KEYWORD, parameter.KEYWORD_ONLY):
+            raise TypeError(
+                f"{name} takes '{parameter}'. Input ports are named parameters; components with other ports "
+                "override 'ports'."
+            )
+        if parameter.default is parameter.empty:
+            inputs.append(parameter.name)
+        elif parameter.default is None:
+            optional_inputs.append(parameter.name)
+        else:
+            raise TypeError(f"{name}: the default of the optional input '{parameter.name}' must be 'None'.")
+
+    return_type = typing.get_type_hints(component_class.forward).get("return")
+    outputs = getattr(return_type, "_fields", None)
+    if not (isinstance(return_type, type) and issubclass(return_type, tuple) and outputs):
+        raise TypeError(f"{name} must be annotated to return a 'NamedTuple'. Its fields are the output ports.")
+    return Ports(inputs=tuple(inputs), optional_inputs=tuple(optional_inputs), outputs=tuple(outputs))
+
+
+def call_component(component: Component, inputs: Mapping[str, Any]) -> Dict[str, Any]:
+    """Call 'forward' with the inputs by port name. Returns the outputs by port name."""
+    outputs = component.forward(**inputs)
+    if isinstance(outputs, Mapping):  # Components with configured ports, e.g. networks by tensor name
+        return dict(outputs)
+    if hasattr(outputs, "_asdict"):
+        return outputs._asdict()
+    raise TypeError(
+        f"'{type(component).__name__}.forward' returned a '{type(outputs).__name__}'. Components return a "
+        "'NamedTuple' (or a dictionary by port name)."
+    )
 
 
 _COMPONENTS: Dict[ComponentKey, Type[Component]] = {}

@@ -13,7 +13,8 @@ image -> load_image -> resize -> to_tensor -> network -> nms -> to_bboxes -> pre
 ```
 
 Each component reads and writes named items of one data dictionary and has a type, a runtime (NumPy, torch,
-ONNX, OpenVINO), parameters and the conversions it supports. One executor runs any graph, the engines only
+ONNX, OpenVINO), parameters and the conversions it supports. In code a component is one pydantic model: its
+fields are the parameters, `forward` is the implementation, and the signature of `forward` names the ports. One executor runs any graph, the engines only
 run `network` components, and converting a bundle (torch → ONNX → OpenVINO → INT8) replaces the network and
 keeps the rest. A new model family is a new graph built from existing components.
 
@@ -158,6 +159,11 @@ model = inference_model_from_path(
     device="CPU",  # Engine option
 )
 primitives = model.predict(image)  # List[Primitive], e.g. Bbox predictions
+
+# A component also runs on its own
+from inference_model_core.components import ResizeImage
+
+resized = ResizeImage(mode="letterbox", height=320, width=320).forward(image)  # resized.image, resized.transform
 
 # The graph and intermediate values
 print([f"{c.name} ({c.type}, {c.runtime})" for c in read_model_info("model_onnx.zip").graph.components])

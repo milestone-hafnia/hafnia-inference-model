@@ -1,6 +1,6 @@
 """Base class of networks on the torch runtime.
 
-A torch network is stored by reference: the bundle holds the weights and the component parameters name the code
+A torch network is stored by reference: the bundle holds the weights and the component's fields name the code
 that builds the module (e.g. a torchvision architecture). Loading it needs torch and the model's library. It is
 the source format of a model: 'export_onnx' gives the self-contained ONNX version ('inference_model_torch.convert').
 """
@@ -8,13 +8,13 @@ the source format of a model: 'export_onnx' gives the self-contained ONNX versio
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Type, TypeVar
+from typing import Any, Dict
 
 import numpy as np
 import torch
-from pydantic import BaseModel
+from pydantic import PrivateAttr
 
-from inference_model_core import Component, ComponentInfo, LoadOptions, ModelBundleInfo, NetworkParams
+from inference_model_core import Component, NetworkParams
 from inference_model_core.bundle import FileSource
 from inference_model_core.model_info import RUNTIME_TORCH
 
@@ -30,63 +30,48 @@ class OnnxExport:
     provenance: Dict[str, Any] = field(default_factory=dict)
 
 
-T = TypeVar("T", bound="TorchNetworkComponent")
-
-
 class TorchNetworkComponent(Component):
-    """Subclasses set 'type', 'params_model' and the ports, and implement 'build_model', 'forward' and
-    'export_onnx'. The first file of the component is the weights file."""
+    """Subclasses set 'type', declare what identifies the module as fields, and implement 'build_model',
+    'forward' and 'export_onnx'. The first file of the component is the weights file.
+
+    'forward' gets and returns NumPy arrays, as every component: 'call_model' runs a module on them.
+    """
 
     runtime = RUNTIME_TORCH
     engine = ENGINE
 
-    def __init__(
-        self,
-        info: ComponentInfo,
-        model_info: ModelBundleInfo,
-        model: Any,
-        weight_files: Dict[str, bytes],
-        device: torch.device,
-    ):
-        super().__init__(info, model_info)
-        self.model = model
-        self.device = device
-        self._weight_files = weight_files  # Kept for writing the bundle again
+    _model: Any = PrivateAttr()
+    _device: torch.device = PrivateAttr()
+    _weight_files: Dict[str, bytes] = PrivateAttr(default_factory=dict)  # Kept for writing the bundle again
 
-    @classmethod
-    def load(cls: Type[T], info: ComponentInfo, model_info: ModelBundleInfo, path_dir: Path, options: LoadOptions) -> T:
+    def setup(self) -> None:
         """Options: 'device' is 'CPU', 'CUDA' or a torch device name. 'num_threads' sets torch's global
         intra-op threads."""
-        engine_options = options.for_engine(ENGINE)
+        context = self.context
+        engine_options = context.options.for_engine(ENGINE)
         if engine_options:
             raise TypeError(f"Unknown torch engine options: {sorted(engine_options)}")
-        if not info.files:
-            raise ValueError(f"Torch component '{info.name}' has no weights file.")
-        if options.num_threads is not None:
-            torch.set_num_threads(options.num_threads)
-        device = torch_device(options.device)
-        params = cls.params_model.model_validate(info.params)
-        model = cls.build_model(params, path_dir / info.files[0], device)
-        weight_files = {path: (path_dir / path).read_bytes() for path in info.files}
-        return cls(info, model_info, model, weight_files, device)
+        if not context.info.files or context.path_dir is None:
+            raise ValueError(f"Torch component '{context.info.name}' needs its weights file to be loaded.")
+        if context.options.num_threads is not None:
+            torch.set_num_threads(context.options.num_threads)
+        self._device = torch_device(context.options.device)
+        self._model = self.build_model(context.path_dir / context.info.files[0], self._device)
+        self._weight_files = {path: (context.path_dir / path).read_bytes() for path in context.info.files}
 
     def files(self) -> Dict[str, FileSource]:
         return dict(self._weight_files)
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        tensors = {port: torch.as_tensor(np.ascontiguousarray(value)).to(self.device) for port, value in inputs.items()}
+    def call_model(self, module: torch.nn.Module, *arrays: np.ndarray) -> Any:
+        """Run a module on NumPy arrays: as tensors on the component's device, without gradients. Returns the
+        module's outputs with every tensor as a NumPy array."""
+        tensors = [torch.as_tensor(np.ascontiguousarray(array)).to(self._device) for array in arrays]
         with torch.no_grad():
-            outputs = self.forward(tensors)
-        return {port: tensor.detach().cpu().numpy() for port, tensor in outputs.items()}
-
-    @classmethod
-    @abstractmethod
-    def build_model(cls, params: BaseModel, path_weights: Path, device: torch.device) -> Any:
-        """Build the model from the component parameters and load its weights. In eval mode, on 'device'."""
+            return _to_numpy(module(*tensors))
 
     @abstractmethod
-    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Run the model on tensors on its device (port -> tensor)."""
+    def build_model(self, path_weights: Path, device: torch.device) -> Any:
+        """Build the model from the component's fields and load its weights. In eval mode, on 'device'."""
 
     @abstractmethod
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
@@ -94,6 +79,16 @@ class TorchNetworkComponent(Component):
 
         'options' are the component's stored 'onnx' conversion options, merged with the caller's.
         """
+
+
+def _to_numpy(outputs: Any) -> Any:
+    if isinstance(outputs, torch.Tensor):
+        return outputs.detach().cpu().numpy()
+    if isinstance(outputs, dict):
+        return {name: _to_numpy(value) for name, value in outputs.items()}
+    if isinstance(outputs, (tuple, list)):
+        return tuple(_to_numpy(value) for value in outputs)
+    return outputs
 
 
 def torch_device(device: str) -> torch.device:

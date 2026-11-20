@@ -15,13 +15,14 @@ Preprocessing follows trainer-classification's training transform: resize to 'im
 import copy
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torchvision
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from torch import nn
 from torchvision.models import ResNet18_Weights, WeightsEnum, resnet18
 
@@ -53,11 +54,8 @@ ARCHITECTURES: Dict[str, Tuple[Callable[..., nn.Module], WeightsEnum]] = {
 }
 
 
-class TorchvisionClassifierParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    architecture: str = Field(description=f"torchvision architecture. Options: {list(ARCHITECTURES)}")
-    num_classes: int = Field(gt=0)
-    image_size: int = Field(gt=0, description="Square input size the model was trained on")
+class Logits(NamedTuple):
+    logits: np.ndarray
 
 
 @register_component
@@ -65,26 +63,25 @@ class TorchvisionClassifier(TorchNetworkComponent):
     """A torchvision classification network: 'images' (N, 3, S, S) -> 'logits' (N, classes)."""
 
     type = "torchvision_classifier"
-    params_model = TorchvisionClassifierParams
-    params: TorchvisionClassifierParams
-    input_ports = ("images",)
-    output_ports = ("logits",)
 
-    @classmethod
-    def build_model(cls, params: TorchvisionClassifierParams, path_weights: Path, device: torch.device) -> nn.Module:  # type: ignore[override]
-        builder, _ = _architecture(params.architecture)
-        model = builder(weights=None, num_classes=params.num_classes)
+    architecture: str = Field(description=f"torchvision architecture. Options: {list(ARCHITECTURES)}")
+    num_classes: int = Field(gt=0)
+    image_size: int = Field(gt=0, description="Square input size the model was trained on")
+
+    def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
+        builder, _ = _architecture(self.architecture)
+        model = builder(weights=None, num_classes=self.num_classes)
         model.load_state_dict(load_state_dict_file(path_weights), strict=True)
         return model.to(device).eval()
 
-    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        return {"logits": self.model(inputs["images"])}
+    def forward(self, images: np.ndarray) -> Logits:
+        return Logits(self.call_model(self._model, images))
 
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
         options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
-        size, dynamic_batch = self.params.image_size, options["dynamic_batch"]
+        size, dynamic_batch = self.image_size, options["dynamic_batch"]
         onnx_export(
-            copy.deepcopy(self.model).cpu(),
+            copy.deepcopy(self._model).cpu(),
             (torch.zeros(2 if dynamic_batch else 1, 3, size, size),),
             path_onnx,
             input_names=["images"],
@@ -95,7 +92,7 @@ class TorchvisionClassifier(TorchNetworkComponent):
         batch = None if dynamic_batch else 1
         params = NetworkParams(
             input_tensors=[TensorInfo(name="images", shape=[batch, 3, size, size])],
-            output_tensors=[TensorInfo(name="logits", shape=[batch, self.params.num_classes])],
+            output_tensors=[TensorInfo(name="logits", shape=[batch, self.num_classes])],
         )
         return OnnxExport(params=params, batched=True)
 
@@ -181,36 +178,23 @@ def create_torchvision_classification_bundle(
         provenance: Extra provenance information stored with the network component.
     """
     _architecture(architecture)
-    resize = {
-        "mode": "stretch",
-        "height": image_size,
-        "width": image_size,
-        "interpolation": "linear",
-        "antialias": True,
-    }
+    network = TorchvisionClassifier(
+        architecture=architecture, num_classes=len(task.get_class_names() or []), image_size=image_size
+    )
     components = [
-        LoadImage.create_info("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
-        ResizeImage.create_info(
-            "resize",
-            inputs={"image": "image_rgb"},
-            outputs={"image": "image_resized", "transform": "image_transform"},
-            params=resize,
+        LoadImage().connect("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        ResizeImage(
+            mode="stretch", height=image_size, width=image_size, interpolation="linear", antialias=True
+        ).connect(
+            "resize", inputs={"image": "image_rgb"}, outputs={"image": "image_resized", "transform": "image_transform"}
         ),
-        ImageToTensor.create_info(
-            "to_tensor",
-            inputs={"image": "image_resized"},
-            outputs={"tensor": "input_tensor"},
-            params={"scale": 1 / 255, "mean": IMAGENET_MEAN, "std": IMAGENET_STD},
+        ImageToTensor(scale=1 / 255, mean=IMAGENET_MEAN, std=IMAGENET_STD).connect(
+            "to_tensor", inputs={"image": "image_resized"}, outputs={"tensor": "input_tensor"}
         ),
-        TorchvisionClassifier.create_info(
+        network.connect(
             "network",
             inputs={"images": "input_tensor"},
             outputs={"logits": "logits"},
-            params={
-                "architecture": architecture,
-                "num_classes": len(task.get_class_names() or []),
-                "image_size": image_size,
-            },
             files=[WEIGHTS_FILE],
             batched=True,
             conversions={
@@ -225,11 +209,8 @@ def create_torchvision_classification_bundle(
                 **(provenance or {}),
             },
         ),
-        ClassificationFromLogits.create_info(
-            "to_classification",
-            inputs={"logits": "logits"},
-            outputs={"predictions": "predictions"},
-            params={"task_name": task.name, "score_threshold": 0.0},
+        ClassificationFromLogits(task_name=task.name, score_threshold=0.0).connect(
+            "to_classification", inputs={"logits": "logits"}, outputs={"predictions": "predictions"}
         ),
     ]
     model_info = ModelBundleInfo(

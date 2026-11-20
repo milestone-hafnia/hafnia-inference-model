@@ -12,18 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
-from pydantic import BaseModel, ConfigDict
+from pydantic import PrivateAttr
 
-from inference_model_core import (
-    Component,
-    ComponentInfo,
-    ConversionInfo,
-    GraphInfo,
-    LoadOptions,
-    ModelBundleInfo,
-    write_bundle,
-)
-from inference_model_core.components import DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_core import Component, ConversionInfo, GraphInfo, ModelBundleInfo, write_bundle
+from inference_model_core.components import Detections, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
 
 DUMMY_RUNTIME = "dummy"
 DUMMY_CLASS_NAMES = ["car", "person"]
@@ -37,50 +29,48 @@ DUMMY_DETECTIONS = {
 }
 
 
-class DummyNetworkParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    max_batch_size: Optional[int] = None
-
-
 class DummyNetwork(Component):
     """A 'network' on the made-up runtime 'dummy'. Works batched and per sample."""
 
     type = "network"
     runtime = DUMMY_RUNTIME
     engine = DUMMY_RUNTIME
-    params_model = DummyNetworkParams
-    params: DummyNetworkParams
-    input_ports = ("images",)
-    output_ports = ("boxes", "scores", "labels")
 
-    def __init__(self, info: ComponentInfo, model_info: ModelBundleInfo, detections: dict, options: LoadOptions):
-        super().__init__(info, model_info)
-        self.detections = detections
-        self.options = options
-        self.input_shapes: List[Tuple[int, ...]] = []
+    batch_limit: Optional[int] = None
 
-    @classmethod
-    def load(cls, info, model_info, path_dir, options) -> "DummyNetwork":
-        return cls(info, model_info, json.loads((path_dir / info.files[0]).read_text()), options)
+    _detections: dict = PrivateAttr()
+    _input_shapes: List[Tuple[int, ...]] = PrivateAttr(default_factory=list)
+
+    def setup(self) -> None:
+        assert self.context.path_dir is not None
+        self._detections = json.loads((self.context.path_dir / self.info.files[0]).read_text())
 
     def files(self) -> Dict[str, Any]:
-        return {self.info.files[0]: json.dumps(self.detections).encode()}
+        return {self.info.files[0]: json.dumps(self._detections).encode()}
 
     @property
     def max_batch_size(self) -> Optional[int]:
-        return self.params.max_batch_size
+        return self.batch_limit
 
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        self.input_shapes.append(inputs["images"].shape)
-        outputs: Dict[str, np.ndarray] = {
-            "boxes": np.asarray(self.detections["boxes"], dtype=np.float32),
-            "scores": np.asarray(self.detections["scores"], dtype=np.float32),
-            "labels": np.asarray(self.detections["labels"], dtype=np.int64),
-        }
+    @property
+    def detections(self) -> dict:
+        return self._detections
+
+    @property
+    def input_shapes(self) -> List[Tuple[int, ...]]:
+        """Shapes of 'images' in the calls so far."""
+        return self._input_shapes
+
+    def forward(self, images: np.ndarray) -> Detections:
+        self._input_shapes.append(images.shape)
+        outputs = Detections(
+            boxes=np.asarray(self._detections["boxes"], dtype=np.float32),
+            scores=np.asarray(self._detections["scores"], dtype=np.float32),
+            labels=np.asarray(self._detections["labels"], dtype=np.int64),
+        )
         if not self.info.batched:
             return outputs
-        batch_size = inputs["images"].shape[0]
-        return {name: np.stack([value] * batch_size) for name, value in outputs.items()}
+        return Detections(*(np.stack([value] * images.shape[0]) for value in outputs))
 
 
 class DummyNetworkOnOtherEngine(DummyNetwork):
@@ -100,33 +90,25 @@ def make_model_info(
     The network detects label 0 and label 1 on every image: by default the classes 'car' and 'person'."""
     size = DUMMY_INPUT_SIZE
     components = [
-        LoadImage.create_info("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
-        ResizeImage.create_info(
-            "resize",
-            inputs={"image": "image_rgb"},
-            outputs={"image": "image_resized", "transform": "image_transform"},
-            params={"mode": "letterbox", "height": size, "width": size},
+        LoadImage().connect("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        ResizeImage(mode="letterbox", height=size, width=size).connect(
+            "resize", inputs={"image": "image_rgb"}, outputs={"image": "image_resized", "transform": "image_transform"}
         ),
-        ImageToTensor.create_info(
-            "to_tensor",
-            inputs={"image": "image_resized"},
-            outputs={"tensor": "input_tensor"},
-            params={"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
+        ImageToTensor(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]).connect(
+            "to_tensor", inputs={"image": "image_resized"}, outputs={"tensor": "input_tensor"}
         ),
-        DummyNetwork.create_info(
+        DummyNetwork(batch_limit=max_batch_size).connect(
             "network",
             inputs={"images": "input_tensor"},
             outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
-            params={"max_batch_size": max_batch_size},
             files=[DUMMY_NETWORK_FILE],
             batched=batched,
             conversions=conversions,
         ),
-        DetectionsToBboxes.create_info(
+        DetectionsToBboxes(task_name="object_detection").connect(
             "to_bboxes",
             inputs={"boxes": "boxes", "scores": "scores", "labels": "labels", "transform": "image_transform"},
             outputs={"predictions": "predictions"},
-            params={"task_name": "object_detection"},
         ),
     ]
     return ModelBundleInfo(
@@ -142,15 +124,15 @@ def make_model_info(
     )
 
 
-def network_of(model: Any) -> Component:
-    """The 'network' component of a loaded inference model or model graph."""
-    graph = getattr(model, "graph", model)
-    return next(component for component in graph.components if component.info.name == "network")
-
-
 def write_dummy_bundle(path_bundle: Path, **model_info_kwargs: Any) -> Path:
     files = {DUMMY_NETWORK_FILE: json.dumps(DUMMY_DETECTIONS).encode()}
     return write_bundle(path_bundle, make_model_info(**model_info_kwargs), files)
+
+
+def network_of(model: Any) -> Any:
+    """The 'network' component of a loaded inference model or model graph."""
+    graph = getattr(model, "graph", model)
+    return next(component for component in graph.components if component.info.name == "network")
 
 
 def random_image(height: int, width: int, seed: int = 0) -> np.ndarray:

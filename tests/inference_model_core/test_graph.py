@@ -115,7 +115,7 @@ def test_engine_override_and_options(tmp_path, dummy_network):
             path_bundle, inference_engine="other", device="GPU", num_threads=2, engine_options={"other": {"hint": 1}}
         )
         assert type(network(graph)) is DummyNetworkOnOtherEngine
-        options = network(graph).options
+        options = network(graph).context.options
         assert (options.device, options.num_threads, options.for_engine("other")) == ("GPU", 2, {"hint": 1})
         assert graph.model_info == make_model_info()  # The bundle is unchanged
     finally:
