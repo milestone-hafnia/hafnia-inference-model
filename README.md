@@ -4,20 +4,69 @@ A Hafnia trainer package for **generic model export and inference**. It does no 
 converts models to OpenVINO and runs them through one shared `InferenceModel` interface that always
 returns Hafnia primitives, so models can be visualized, benchmarked and served the same way.
 
-A model is stored as a **model bundle**: a zip with the model files and a `model_info.json` that describes
-the model as a **graph of components**, for example
+## Concept
 
-```
-image -> load_image -> resize -> to_tensor -> network -> nms -> to_bboxes -> predictions
-                                           (onnx_network)
+### Two environments, one model bundle
+
+```mermaid
+flowchart LR
+    subgraph user_env["User's trainer package: own code and dependencies"]
+        frameworks["CV frameworks<br/>torchvision, RF-DETR<br/>later: Ultralytics, Darknet, D-FINE,<br/>mmdetection, custom"]
+        bundle_user["Model bundle (zip)"]
+        frameworks -->|export| bundle_user
+    end
+    subgraph fixed_env["package-openvino: fixed code, users can't change it"]
+        bundle["Model bundle (zip)"]
+        converter["OpenVINO converter<br/>FP32, FP16, INT8"]
+        bundle_openvino["Model bundle (OpenVINO IR)"]
+        model["InferenceModel<br/>image in, Hafnia primitives out"]
+        apps["Applications<br/>predict, visualize,<br/>benchmark latency and accuracy,<br/>later: serve"]
+        bundle -->|"from_path()"| model
+        bundle --> converter --> bundle_openvino -->|"from_path()"| model
+        model --> apps
+    end
+    bundle_user ==>|"zip only: no Python code, no dependencies"| bundle
 ```
 
-Each component reads and writes named items of one data dictionary and has a type, parameters and the
-conversions it supports. The bundle only **defines** the model, and a **graph engine** runs it:
+- **A user's trainer package** trains a model with a CV framework of the user's choice. It holds the user's
+  code and dependencies, and exports the model as a **model bundle**.
+- **Only the bundle crosses** to this package: no Python code and no dependencies. Loading a bundle never
+  runs code from it.
+- **This package is fixed code**, the same for every model. It converts a bundle to OpenVINO and loads any
+  bundle as an `InferenceModel` with `inference_model_from_path()`. An `InferenceModel` takes an image and
+  returns Hafnia primitives, so predicting, visualizing and benchmarking are shared by all models.
+
+Where the code is today: the export step for the two supported frameworks (torchvision and RF-DETR) is the
+`model_exporters` package in this repository. It is the only part that depends on the frameworks, and in the
+concept it belongs on the trainer package side. A bundle with a torch network needs `model_exporters` to
+rebuild the network, so the bundles that cross the line are ONNX or OpenVINO bundles.
+
+### Inside a bundle: definition and implementation
+
+A bundle is a zip with the model files and a `model_info.json` that describes the model as a **graph of
+components**. Each component reads and writes named items of one data dictionary. The bundle only
+**defines** the graph, and a **graph engine** implements and runs it:
+
+```mermaid
+flowchart LR
+    subgraph definition["Definition: stored in the bundle (inference_model_core, no torch)"]
+        d1[load_image] --> d2[resize_image] --> d3[image_to_tensor] --> d4[onnx_network] --> d5[anchor_nms] --> d6[detections_to_bboxes]
+    end
+    subgraph implementation["Implementation: torch graph engine (inference_model_torch)"]
+        i1[TorchLoadImage] --> i2[TorchResizeImage] --> i3[TorchImageToTensor] --> i4["OnnxRuntimeNetwork<br/>or on OpenVINO"] --> i5[TorchAnchorNMS] --> i6[TorchDetectionsToBboxes]
+    end
+    d1 -.-> i1
+    d2 -.-> i2
+    d3 -.-> i3
+    d4 -.-> i4
+    d5 -.-> i5
+    d6 -.-> i6
+```
 
 - A **component definition** (`inference_model_core`) is a pydantic model for one component type: its fields
-  are the parameters and it declares the ports (named inputs and outputs). It holds no implementation and
-  needs no tensor library.
+  are the parameters and it declares the ports (named inputs and outputs). `model_info.json` stores the type,
+  the parameters and the data key of each port. A definition holds no implementation and needs no tensor
+  library.
 - The **torch graph engine** (`inference_model_torch`) has an implementation of every definition and runs the
   graph. Components exchange `torch.Tensor`s, so a graph can run on the GPU from the image to the detections.
   Networks stored as ONNX or OpenVINO IR files run on ONNX Runtime or OpenVINO inside the same graph.
@@ -26,7 +75,7 @@ Converting a bundle (torch → ONNX → OpenVINO → INT8) replaces the network 
 family is a new graph built from existing components. Running a graph needs torch, whatever format the network
 has.
 
-See [docs/design.md](docs/design.md) for the concept and decisions.
+See [docs/design.md](docs/design.md) for the design and decisions.
 
 ## Supported models
 
