@@ -1,5 +1,5 @@
 """Definitions of the standard components: image preprocessing, detection and classification decoding, and
-networks stored as ONNX or OpenVINO IR files. A graph engine implements them (see 'inference_model_torch')."""
+networks stored as ONNX or OpenVINO IR files. The torch graph engine implements them ('inference_model_torch')."""
 
 from inference_model_core.definitions.classification import ClassificationFromLogits
 from inference_model_core.definitions.detection import AnchorNMS, DetectionsToBboxes, QueryTopK

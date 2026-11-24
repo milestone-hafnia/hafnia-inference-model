@@ -28,11 +28,9 @@ rfdetr = ["rfdetr==1.8.1"]  # RF-DETR bundles (model_exporters.rfdetr_detection)
 [dependency-groups]
 dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
 
-# Graph engine, component implementations and converters of the packages in this repo. A separately installed
-# package adds its own to the same groups. They are imported only when a bundle needs them.
-[project.entry-points."hafnia.inference_model_graph_engines"]
-"torch" = "inference_model_torch.graph:TorchModelGraph"
-
+# Component implementations, converters and pretrained models of the packages in this repo. A separately
+# installed package adds its own to the same groups. They are imported only when a bundle needs them.
+#
 # Implementations of component definitions on the torch graph engine (see 'inference_model_torch.component').
 # The standard components ('inference_model_torch.components') need no entry.
 [project.entry-points."hafnia.inference_model_components"]

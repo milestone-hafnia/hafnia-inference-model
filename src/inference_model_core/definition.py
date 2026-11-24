@@ -12,8 +12,8 @@ the model info, and it declares the ports: the named inputs the component reads 
         width: int
 
 A definition holds no implementation and depends on no tensor library, so bundles can be described, written and
-checked without one. A graph engine (e.g. 'inference_model_torch') has an implementation per definition and runs
-the graph. 'connect' turns a definition into a step of a graph:
+checked without one. The torch graph engine ('inference_model_torch') has an implementation per definition and
+runs the graph. 'connect' turns a definition into a step of a graph:
 
     ResizeImage(height=320, width=320).connect(
         "resize", inputs={"image": "image_rgb"}, outputs={"image": "image_resized", "transform": "transform"}

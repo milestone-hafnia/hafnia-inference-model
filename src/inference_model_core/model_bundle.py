@@ -19,8 +19,9 @@ the dependencies of its own framework:
     bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")
 
 The bundle only describes the model. What a component type means (its parameters and ports) is its component
-definition ('inference_model_core.definition'), and how it is computed is up to the graph engine that runs the
-bundle. A conversion (e.g. ONNX -> OpenVINO) copies the description and only replaces the components it converts.
+definition ('inference_model_core.definition'), and how it is computed is up to the torch graph engine that runs
+the bundle ('inference_model_torch'). A conversion (e.g. ONNX -> OpenVINO) copies the description and only
+replaces the components it converts.
 
 The extension lives here until the schema has settled and is then moved to hafnia (see docs/design.md).
 """

@@ -43,8 +43,8 @@ Implementation (torch):     TorchLoadImage  TorchResizeImage  TorchImageToTensor
   parameters, and `input_ports` / `output_ports` declare the ports. It holds no implementation.
 - **Implementation** (`inference_model_torch` and the inference engine packages): `Component[<definition>]`
   with a `forward` whose parameters are the input ports. Registration fails when they don't match.
-- **Graph engine**: torch is the only one. Components exchange `torch.Tensor`s, which stay on the device of
-  the component that produced them. ONNX and OpenVINO networks convert to NumPy at their boundary.
+- **Graph engine**: torch runs every graph, and there is no choice of graph engine. Components exchange
+  `torch.Tensor`s, which stay on the device of the component that produced them. ONNX and OpenVINO networks convert to NumPy at their boundary.
 - **Conversion** replaces the network component and keeps the rest: torch → ONNX → OpenVINO → INT8.
 
 ## Packages
@@ -68,7 +68,8 @@ Each top-level package under `src/` is a separate concept that can later move to
   `.zip` is written as a zip, any other as a folder.
 - The load settings (`device`, `params`, `inference_engine`, ...) are defined once, in `LoadSettings`, and
   passed on as `**load_settings`. Add a setting there, not as an argument of each function.
-- `inference_model_core` imports no torch, no graph engine and no inference engine. A test checks this.
+- `inference_model_core` imports no torch and no inference engine when it is imported. A test checks this.
+  Only `load_graph` imports the torch graph engine, inside the function.
 - The inference engine packages import `inference_model_core` and `inference_model_torch`, never each other.
 - A component type has one definition and one default implementation. An alternative implementation is
   registered as `<type>/<inference engine>` and chosen with `inference_engine=` at load time.

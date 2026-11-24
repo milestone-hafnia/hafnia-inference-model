@@ -13,7 +13,7 @@ from helpers import (
 )
 from pydantic import ValidationError
 
-from inference_model_core import GraphInfo, list_graph_engines, load_graph
+from inference_model_core import GraphInfo, load_graph
 from inference_model_torch import TorchModelGraph, register_component
 from inference_model_torch.component import unregister_component
 
@@ -25,10 +25,9 @@ def network(graph) -> DummyNetwork:
 
 
 def test_torch_is_the_graph_engine(tmp_path, dummy_network):
-    assert list_graph_engines() == ["torch"]
     assert isinstance(load_graph(write_dummy_bundle(tmp_path / "model.zip")), TorchModelGraph)
-    with pytest.raises(KeyError, match="No graph engine 'numpy'"):
-        load_graph(tmp_path / "model.zip", graph_engine="numpy")
+    with pytest.raises(TypeError, match="Unknown load settings"):  # There is no graph engine to choose
+        load_graph(tmp_path / "model.zip", graph_engine="torch")
 
 
 def test_run_is_a_dictionary_in_and_out(tmp_path, dummy_network):

@@ -36,7 +36,6 @@ import torch
 from inference_model_core.definition import ComponentDefinition
 from inference_model_core.model_bundle import ComponentInfo, ModelBundle
 
-GRAPH_ENGINE = "torch"
 ENGINE = "torch"  # Inference engine of the components written in torch
 ENTRY_POINT_GROUP = "hafnia.inference_model_components"
 BUILTIN_COMPONENTS_MODULE = "inference_model_torch.components"

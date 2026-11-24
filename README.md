@@ -46,7 +46,7 @@ rebuild the network, so the bundles that cross the line are ONNX or OpenVINO bun
 
 A bundle is a zip with the model files and a `model_info.json` that describes the model as a **graph of
 components**. Each component reads and writes named items of one data dictionary. The bundle only
-**defines** the graph, and a **graph engine** implements and runs it:
+**defines** the graph, and the **torch graph engine** implements and runs it:
 
 ```mermaid
 flowchart LR

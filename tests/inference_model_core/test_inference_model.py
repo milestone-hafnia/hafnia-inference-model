@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 from hafnia.dataset.benchmark.benchmark import run_inference_on_dataset
 from hafnia.dataset.benchmark.inference_model import InferenceModel
@@ -44,8 +46,12 @@ def test_load_settings(tmp_path, dummy_network):
     for load in (GraphInferenceModel.from_path, load_graph):
         with pytest.raises(TypeError, match=r"Unknown load settings \['devise'\]. Settings: \['device', "):
             load(path_bundle, devise="CPU")
-        with pytest.raises(KeyError, match="No graph engine 'numpy'"):
-            load(path_bundle, graph_engine="numpy")
+
+
+def test_running_a_graph_needs_the_torch_graph_engine(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "inference_model_torch.graph", None)  # As when torch is not installed
+    with pytest.raises(ImportError, match=r"needs the torch graph engine .* Install the 'torch' extra"):
+        load_graph(write_dummy_bundle(tmp_path / "model.zip"))
 
 
 def test_from_bundle_needs_the_files_on_disk(dummy_network):

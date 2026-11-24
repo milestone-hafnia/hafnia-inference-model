@@ -1,23 +1,19 @@
-"""The model graph: the components of a bundle, loaded by a graph engine to run on a data dictionary.
+"""The model graph: the components of a bundle, loaded by the torch graph engine to run on a data dictionary.
 
 All inputs, outputs and intermediate values are items of one dictionary. Each component reads the keys its
 inputs are connected to and writes the keys of its outputs. Values are kept per sample, without a batch axis:
 a 'batched' component gets the values of all samples stacked on a new first axis and its outputs are split
 again, any other component is called once per sample.
 
-A graph engine has an implementation of each component definition and decides how tensors are exchanged between
-them. This repo has one: 'torch' ('inference_model_torch'), which exchanges 'torch.Tensor's. Graph engines are
-listed in the 'hafnia.inference_model_graph_engines' entry point group and imported only when used.
+The torch graph engine ('inference_model_torch') has an implementation of each component definition and
+exchanges 'torch.Tensor's between them. It is the only graph engine and is imported when a graph is loaded, so
+describing, reading and writing a bundle needs no torch.
 """
 
-from importlib.metadata import entry_points
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, TypedDict, Union, Unpack
 
 from inference_model_core.bundle_io import PathLike
 from inference_model_core.model_bundle import ModelBundle
-
-ENTRY_POINT_GROUP = "hafnia.inference_model_graph_engines"
-DEFAULT_GRAPH_ENGINE = "torch"
 
 
 class LoadSettings(TypedDict, total=False):
@@ -35,7 +31,6 @@ class LoadSettings(TypedDict, total=False):
         num_threads: Threads per inference engine. By default the engines decide.
         engine_options: Inference engine name -> settings only that engine knows, e.g.
             '{"openvino": {"performance_hint": "LATENCY"}}'.
-        graph_engine: Graph engine that runs the components. Defaults to 'torch'.
     """
 
     inference_engine: Optional[str]
@@ -43,14 +38,18 @@ class LoadSettings(TypedDict, total=False):
     device: Optional[str]
     num_threads: Optional[int]
     engine_options: Optional[Mapping[str, Mapping[str, Any]]]
-    graph_engine: Optional[str]
 
 
 class ModelGraph(Protocol):
-    """A loaded model graph, as every graph engine provides it."""
+    """A loaded model graph: what this package uses of 'inference_model_torch.TorchModelGraph', which it can
+    not import here without importing torch."""
 
     bundle: ModelBundle
-    components: Sequence[Any]  # The loaded component implementations of the graph engine, in graph order
+
+    @property
+    def components(self) -> Sequence[Any]:
+        """The loaded component implementations, in graph order."""
+        ...
 
     def run(self, inputs: Mapping[str, Any], outputs: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """Run the graph on one sample: data dictionary with the graph inputs in, the graph outputs out."""
@@ -68,10 +67,6 @@ class ModelGraph(Protocol):
         ...
 
 
-def list_graph_engines() -> List[str]:
-    return sorted(entry_point.name for entry_point in entry_points(group=ENTRY_POINT_GROUP))
-
-
 def load_graph(
     bundle: Union[ModelBundle, PathLike],
     outputs: Optional[Sequence[str]] = None,
@@ -84,20 +79,17 @@ def load_graph(
         outputs: Only load the components needed to compute these data keys. By default all components.
         **load_settings: How the bundle is loaded, e.g. 'device="CUDA"'. See 'LoadSettings'.
     """
-    settings: Dict[str, Any] = dict(load_settings)
-    unknown = sorted(set(settings) - set(LoadSettings.__annotations__))
+    unknown = sorted(set(load_settings) - set(LoadSettings.__annotations__))
     if unknown:
         raise TypeError(f"Unknown load settings {unknown}. Settings: {sorted(LoadSettings.__annotations__)}")
-    graph_engine = settings.pop("graph_engine", None) or DEFAULT_GRAPH_ENGINE
-    matches = [entry_point for entry_point in entry_points(group=ENTRY_POINT_GROUP) if entry_point.name == graph_engine]
-    if not matches:
-        raise KeyError(f"No graph engine '{graph_engine}'. Available: {list_graph_engines()}")
     try:
-        graph_class = matches[0].load()
+        # Imported here: only running a graph needs torch, the bundle definition does not
+        from inference_model_torch.graph import TorchModelGraph
     except ImportError as e:
         raise ImportError(
-            f"Graph engine '{graph_engine}' ('{matches[0].value}') can not be imported: {e}. Install its dependencies."
+            "Running a model graph needs the torch graph engine ('inference_model_torch'), which can not be "
+            f"imported: {e}. Install the 'torch' extra."
         ) from e
     if not isinstance(bundle, ModelBundle):
         bundle = ModelBundle.from_path(bundle)
-    return graph_class.load(bundle, outputs=outputs, **settings)
+    return TorchModelGraph.load(bundle, outputs=outputs, **load_settings)

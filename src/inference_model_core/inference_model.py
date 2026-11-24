@@ -41,9 +41,9 @@ class GraphInferenceModel(InferenceModel):
         Args:
             bundle: A bundle that was read or written, e.g. the result of 'ModelBundle.convert'. Its files are
                 read from 'bundle.path', so a bundle that is only in memory has to be written first.
-            **load_settings: How the bundle is loaded: 'inference_engine', 'params', 'device', 'num_threads',
-                'engine_options' and 'graph_engine', e.g. 'params={"score_threshold": 0.5}, device="CUDA"'. See
-                'LoadSettings' for each of them.
+            **load_settings: How the bundle is loaded: 'inference_engine', 'params', 'device', 'num_threads' and
+                'engine_options', e.g. 'params={"score_threshold": 0.5}, device="CUDA"'. See 'LoadSettings' for
+                each of them.
         """
         return cls(load_graph(bundle, **load_settings))
 

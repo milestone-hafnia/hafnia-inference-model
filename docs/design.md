@@ -232,9 +232,11 @@ How the torch implementations differ from the NumPy ones they replaced (2026-11-
 
 ### 2.4 Execution: the torch graph engine
 
-`load_graph` loads the components of a bundle with a graph engine, which runs them in order on the
-data dictionary. Graph engines are listed in the entry point group
-`hafnia.inference_model_graph_engines`. This version has one, `torch` (`TorchModelGraph`).
+`load_graph` loads the components of a bundle with the torch graph engine (`TorchModelGraph`), which
+runs them in order on the data dictionary. It is the only graph engine, and `load_graph` imports it
+directly. Until 2026-11-24 graph engines were looked up in an entry point group with a
+`graph_engine` setting, which promised a second engine the rest of the code could not host
+(section 10).
 
 - **Values are kept per sample, without a batch axis.** A `batched` component gets the tensors of
   all samples stacked on a new first axis, and its outputs are split again. Any other component is
@@ -315,7 +317,6 @@ one place. A setting that is left out or `None` has its default, and an unknown 
   the definition, and an unknown name is an error.
 - **`device`, `num_threads`** for all inference engines, and **`engine_options`** per engine, e.g.
   `{"openvino": {"performance_hint": "LATENCY"}}`.
-- **`graph_engine`**: `torch`, the only one.
 
 `GraphInferenceModel` **extends** Hafnia's `InferenceModel`, so `hafnia.dataset.benchmark` works
 unchanged, and `get_model_info()` returns the `ModelBundle`, which is a Hafnia `ModelInfo` with
@@ -523,8 +524,8 @@ their base name.
 
 Dependency rules:
 
-- `inference_model_core` imports **no** graph engine, **no** inference engine and **no** torch
-  (tested). It finds the graph engine through an entry point when a graph is loaded.
+- `inference_model_core` imports **no** inference engine and **no** torch when it is imported
+  (tested). `load_graph` imports the torch graph engine inside the function, when a graph is loaded.
 - `inference_model_torch` imports `inference_model_core`, torch and torchvision (for NMS).
 - The inference engine packages import `inference_model_core` and `inference_model_torch`, never each
   other. `inference_model_openvino.convert` reads ONNX with OpenVINO itself, not through ONNX Runtime.
@@ -805,6 +806,7 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 | What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `convert`, `from_pretrained` and the bundle helpers of `model_exporters`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
 | How is a pretrained model written by name? | **`ModelBundle.from_pretrained(name, path_bundle)`**, with `list_pretrained()` for the names. It replaces `create_pretrained_bundle` and `pretrained_model_names` of `model_exporters.registry`. Each model name is an entry point (`hafnia.inference_model_pretrained_models`) that is imported only when used, so a model only needs the dependencies of its own framework, `inference_model_core` stays torch free and another package adds its own models. Names are flat (`resnet18`), and a name registered by two packages is an error. The path is required: a cache folder can be added later. |
 | Where are the load settings defined? | **Once, in `LoadSettings`** (2026-11-24). `from_path`, `from_bundle`, `load_graph` and `TorchModelGraph.load` each listed the same six arguments and passed them on. They now take `**load_settings: Unpack[LoadSettings]`: calls look the same, a type checker still checks the names and types, and an unknown setting is a `TypeError` at run time. Settings are keyword only. |
+| Is the graph engine pluggable? | **No** (2026-11-24). Torch runs every graph, and `load_graph` imports `TorchModelGraph` directly. The entry point group `hafnia.inference_model_graph_engines`, the `graph_engine` setting and `list_graph_engines` are removed. They promised a second engine that could not be plugged in: the ONNX Runtime and OpenVINO packages import the torch engine, the component registry is torch's, and calibration yields torch tensors. `ModelGraph` stays as the type of a loaded graph, as the core can not import the torch class without importing torch. If bundles have to run without torch, the plan is to fold preprocessing into the converted network and keep NumPy implementations of the few post-processing components, with a seam designed for that. |
 | Does a loaded model write itself? | **No** (2026-11-24). `write_model`, `TorchModelGraph.write` and `Component.files()` are removed: nothing used them, and every network kept a second copy of its model files in memory for them. A loaded model always comes from a bundle on disk, so `model.get_model_info().write(path)` writes the same bundle. |
 | What if no engine takes the `device`? | **Loading fails** (2026-11-24). A name torch does not know (`GPU`, a typo like `cuda0`) used to run the torch components on the CPU without a word. That stays for graphs with a network on another engine, which checks the name itself, and is an error when every component runs on torch. |
 | Does an inference model convert? | **No.** Converting works on files, not on a loaded graph with its device and parameter overrides. Convert the bundle, then load it. |
