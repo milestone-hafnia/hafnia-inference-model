@@ -12,7 +12,6 @@ import numpy as np
 import openvino as ov
 
 from inference_model_core.definitions import NetworkDefinition, OnnxNetwork, OpenVINONetwork
-from inference_model_torch import register_component
 from inference_model_torch.network import FileNetwork
 
 ENGINE = "openvino"
@@ -63,12 +62,10 @@ class _OpenVINONetwork(FileNetwork[N]):
         return {name: results[port] for name, port in self._output_ports.items()}
 
 
-@register_component
 class OpenVINOIRNetwork(_OpenVINONetwork[OpenVINONetwork]):
     """The default implementation of networks stored as OpenVINO IR."""
 
 
-@register_component(alternative=True)
 class OpenVINOOnnxNetwork(_OpenVINONetwork[OnnxNetwork]):
     """ONNX networks on OpenVINO, for graphs loaded with 'inference_engine="openvino"'."""
 

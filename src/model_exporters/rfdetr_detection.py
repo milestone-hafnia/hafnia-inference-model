@@ -35,7 +35,6 @@ from rfdetr.assets.coco_classes import COCO_CLASSES
 from inference_model_core import ConversionInfo, GraphInfo, ModelBundle, NetworkParams, TensorInfo
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
 from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, QueryTopK, ResizeImage
-from inference_model_torch import register_component
 from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, onnx_options
 from model_exporters.class_names import detection_task, placeholder_class_name
@@ -57,7 +56,6 @@ MODEL_CLASSES: Dict[str, Type[detr.RFDETR]] = {
 }
 
 
-@register_component
 class RFDETRModule(TorchNetwork[RFDETRNetwork]):
     model: detr.RFDETR
 
@@ -123,7 +121,7 @@ def create_pretrained_rfdetr_detection_bundle(
     )
 
 
-def create_trainer_archive_rfdetr_bundle(
+def create_trainer_archive_bundle(
     path_archive: Union[str, Path], path_bundle: Union[str, Path], overwrite: bool = False
 ) -> ModelBundle:
     """Bundle of a trainer-object-detection archive, with the task of the archive."""

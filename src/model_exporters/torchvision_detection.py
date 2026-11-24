@@ -50,7 +50,6 @@ from inference_model_core import (
 )
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
 from inference_model_core.definitions import AnchorNMS, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
-from inference_model_torch import register_component
 from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
 from model_exporters.class_names import detection_task, placeholder_class_name
@@ -344,7 +343,6 @@ def _freeze_batch_norm(module: nn.Module) -> None:
             _freeze_batch_norm(child)
 
 
-@register_component
 class TorchvisionSSDModule(TorchNetwork[TorchvisionSSDNetwork]):
     def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
         ssd = _build_detector(self.params.architecture, self.params.num_classes, path_weights)
@@ -510,7 +508,6 @@ def _export_safe_ops() -> Iterator[None]:
             setattr(module, name, original)
 
 
-@register_component
 class TorchvisionFasterRCNNModule(TorchNetwork[TorchvisionFasterRCNN]):
     def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
         params = self.params

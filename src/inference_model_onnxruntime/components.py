@@ -7,7 +7,6 @@ import numpy as np
 import onnxruntime as ort
 
 from inference_model_core.definitions import OnnxNetwork
-from inference_model_torch import register_component
 from inference_model_torch.network import FileNetwork
 
 ENGINE = "onnxruntime"
@@ -18,7 +17,6 @@ DEVICE_PROVIDERS: Dict[str, List[str]] = {
 }
 
 
-@register_component
 class OnnxRuntimeNetwork(FileNetwork[OnnxNetwork]):
     engine = ENGINE
 

@@ -15,7 +15,7 @@ from inference_model_core import (
     list_converters,
     register_converter,
 )
-from inference_model_core.convert import unregister_converter
+from inference_model_core.convert import ANY_TYPE, unregister_converter
 
 REQUESTS: List[ConversionRequest] = []
 
@@ -81,6 +81,31 @@ def test_conversion_chain(tmp_path, converters):
     # The second step converted the file of the first
     assert "source" in json.loads(ModelBundle.from_path(path_bundle).read_file("network/model.format_c"))["source"]
     assert not (path_bundle / DUMMY_NETWORK_FILE).exists()
+
+
+def test_converter_of_any_type(tmp_path, converters):
+    """The source type '*' converts every component type that has no converter of its own for the target."""
+    used = []
+
+    def convert_any(request: ConversionRequest) -> ComponentInfo:
+        used.append(request.component.type)
+        return convert(request)
+
+    register_converter(ANY_TYPE, "format_b")(convert_any)
+    try:
+        path_source = write_dummy_bundle(tmp_path / "model.zip", conversions=conversions(format_b={}, format_c={}))
+        source = ModelBundle.from_path(path_source)
+        assert (ANY_TYPE, "format_b") in list_converters()
+
+        source.convert("format_b", tmp_path / "own.zip")
+        assert used == []  # The converter of the component's own type comes first
+
+        unregister_converter(DUMMY_TYPE, "format_b")
+        network = source.convert("format_c", tmp_path / "chain.zip").graph.get_component("network")
+        assert used == [DUMMY_TYPE]  # Also as a step of a chain
+        assert network.type == "network_c"
+    finally:
+        unregister_converter(ANY_TYPE, "format_b")
 
 
 def test_chain_needs_every_step_to_be_supported(tmp_path, converters):

@@ -191,13 +191,14 @@ class TorchResizeImage(Component[ResizeImage]):
 - **What is still not torch**: reading an image file (PIL) and building Hafnia primitives (Python
   objects). Both are inside torch implementations, at the two ends of the graph.
 
-Registry: implementations register with the `@register_component` class decorator
-(`@register_component(alternative=True)` for an alternative). Packages list theirs in the entry
-point group `hafnia.inference_model_components`, named `<type>` for the default implementation and
-`<type>/<inference engine>` for an alternative, and are **imported only when a graph needs them**.
-Loading an ONNX bundle never imports OpenVINO or a model library, and a separately installed package
-adds components without a central list to edit. Definitions need no registry: an implementation
-refers to its definition.
+Registry: an implementation is registered in one way. The standard components, and components of
+the running program such as a test, use the `@register_component` class decorator
+(`@register_component(alternative=True)` for an alternative). Components of installed packages are
+only listed in the entry point group `hafnia.inference_model_components`, named `<type>` for the
+default implementation and `<type>/<inference engine>` for an alternative, without a decorator. They
+are **imported and checked only when a graph needs them**. Loading an ONNX bundle never imports
+OpenVINO or a model library, and a separately installed package adds components without a central
+list to edit. Definitions need no registry: an implementation refers to its definition.
 
 Standard components and the data they pass on:
 
@@ -370,12 +371,14 @@ bundle_onnx.convert("openvino_int8", "model_int8.zip", calibration_inputs=[{"ima
   keep in floating point when quantizing. `supported: false` with a `reason` marks a component that
   can't be converted, e.g. to INT8. Options passed to `convert` override the stored ones.
 - **Converters** turn components of one type into a target, which gives a component of another
-  type. They register with `@register_converter` and through the entry point group
-  `hafnia.inference_model_converters` (`<source type>/<target>`):
+  type. Converters of installed packages are listed in the entry point group
+  `hafnia.inference_model_converters` (`<source type>/<target>`). The source type `*` is every
+  component type without a converter of its own for the target. `@register_converter` is for
+  converters of the running program, such as a test:
 
   | Converter | Result | Where |
   |---|---|---|
-  | a torch network type → `onnx` | `onnx_network` | `inference_model_torch/convert.py`, calling the implementation's `export_onnx`. Registered once per family type |
+  | a torch network type → `onnx` | `onnx_network` | `inference_model_torch/convert.py`, calling the implementation's `export_onnx`. Registered once for all families, as `*/onnx` |
   | `onnx_network` → `openvino` (FP32 or FP16) | `openvino_network` | `inference_model_openvino/convert.py` |
   | `onnx_network`, `openvino_network` → `openvino_int8` | `openvino_network` | `inference_model_openvino/convert.py` (NNCF) |
 
@@ -574,7 +577,10 @@ that network: `create_torchvision_detection_bundle`, `create_torchvision_classif
 torchvision models don't need `rfdetr`: `ModelBundle.from_pretrained(name, path)` for a pretrained
 model, through the family's `create_pretrained_*_bundle` function that is registered as the entry
 point of the model name (2.6), and `create_bundle_from_trainer_archive(path_archive, path)` in
-`registry.py` for a trainer archive. They all return the written `ModelBundle`, so the bundle is
+`trainer_archive.py` for a trainer archive. The archive names its model, the pretrained entry point
+of that name gives the family module, and a family that reads archives has a
+`create_trainer_archive_bundle` function in it, so there is no table of trainer models. They all
+return the written `ModelBundle`, so the bundle is
 converted or loaded without reading it again:
 `ModelBundle.from_pretrained(name, path).convert("onnx", path_onnx)`.
 
@@ -806,6 +812,7 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 | What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `convert`, `from_pretrained` and the bundle helpers of `model_exporters`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
 | How is a pretrained model written by name? | **`ModelBundle.from_pretrained(name, path_bundle)`**, with `list_pretrained()` for the names. It replaces `create_pretrained_bundle` and `pretrained_model_names` of `model_exporters.registry`. Each model name is an entry point (`hafnia.inference_model_pretrained_models`) that is imported only when used, so a model only needs the dependencies of its own framework, `inference_model_core` stays torch free and another package adds its own models. Names are flat (`resnet18`), and a name registered by two packages is an error. The path is required: a cache folder can be added later. |
 | Where are the load settings defined? | **Once, in `LoadSettings`** (2026-11-24). `from_path`, `from_bundle`, `load_graph` and `TorchModelGraph.load` each listed the same six arguments and passed them on. They now take `**load_settings: Unpack[LoadSettings]`: calls look the same, a type checker still checks the names and types, and an unknown setting is a `TypeError` at run time. Settings are keyword only. |
+| How many places name a component, converter or model? | **One each, plus the entry point that makes it findable** (2026-11-24). (1) Every torch network converts to ONNX through the single entry `*/onnx`, where `*` is any component type without a converter of its own, instead of one entry per network type. (2) The table of trainer models is gone: a trainer archive's model name is looked up among the pretrained entry points, and the family module has a `create_trainer_archive_bundle` function if it reads archives. (3) Components and converters of installed packages are registered by their entry point only, without a decorator, and checked when first needed. Per-component entry points stay: one entry per package would import every package to find one type. The pretrained names stay in `pyproject.toml` too, as listing them without importing torch needs static metadata; a test keeps them in step with the family tables. |
 | Is the graph engine pluggable? | **No** (2026-11-24). Torch runs every graph, and `load_graph` imports `TorchModelGraph` directly. The entry point group `hafnia.inference_model_graph_engines`, the `graph_engine` setting and `list_graph_engines` are removed. They promised a second engine that could not be plugged in: the ONNX Runtime and OpenVINO packages import the torch engine, the component registry is torch's, and calibration yields torch tensors. `ModelGraph` stays as the type of a loaded graph, as the core can not import the torch class without importing torch. If bundles have to run without torch, the plan is to fold preprocessing into the converted network and keep NumPy implementations of the few post-processing components, with a seam designed for that. |
 | Does a loaded model write itself? | **No** (2026-11-24). `write_model`, `TorchModelGraph.write` and `Component.files()` are removed: nothing used them, and every network kept a second copy of its model files in memory for them. A loaded model always comes from a bundle on disk, so `model.get_model_info().write(path)` writes the same bundle. |
 | What if no engine takes the `device`? | **Loading fails** (2026-11-24). A name torch does not know (`GPU`, a typo like `cuda0`) used to run the torch components on the CPU without a word. That stays for graphs with a network on another engine, which checks the name itself, and is an error when every component runs on torch. |

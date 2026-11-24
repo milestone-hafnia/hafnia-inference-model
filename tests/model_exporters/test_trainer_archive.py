@@ -4,8 +4,7 @@ import zipfile
 import pytest
 
 from inference_model_core import ModelBundle
-from model_exporters.registry import create_bundle_from_trainer_archive
-from model_exporters.trainer_archive import is_trainer_archive
+from model_exporters.trainer_archive import create_bundle_from_trainer_archive, is_trainer_archive
 
 
 def write_archive(path, config: dict):
@@ -34,7 +33,17 @@ def test_unsupported_trainer_archive(tmp_path):
     path_archive = write_archive(tmp_path / "seg.zip", {"name": "RFDETRSegNano", "model_weight_path": "w.pth"})
     assert is_trainer_archive(path_archive)
     assert not is_trainer_archive(tmp_path)
-    with pytest.raises(ValueError, match="Can't create a bundle of trainer model 'RFDETRSegNano'"):
+    with pytest.raises(ValueError, match="trainer model 'RFDETRSegNano': it is not the name of a pretrained model"):
+        create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle.zip")
+
+
+def test_trainer_archive_of_a_family_without_archives(tmp_path):
+    """The family is found through the pretrained entry point of the model name. It reads trainer archives when
+    its module has a 'create_trainer_archive_bundle' function."""
+    pytest.importorskip("torch")
+    config = {"name": "ssdlite320_mobilenet_v3_large", "model_weight_path": "w.pth"}
+    path_archive = write_archive(tmp_path / "ssd.zip", config)
+    with pytest.raises(ValueError, match=r"'model_exporters\.torchvision_detection' has no 'create_trainer_archive"):
         create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle.zip")
 
 

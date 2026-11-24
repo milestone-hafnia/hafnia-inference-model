@@ -1,8 +1,9 @@
 """Converter of torch networks to 'onnx_network' components.
 
 Generic over model families: the torch implementation of the family writes the ONNX file ('export_onnx'), using
-its stored export options (e.g. opset, dynamic batch axis). A family registers the converter for its component
-type: 'register_converter("<type>", "onnx")(convert_torch_to_onnx)', or as an entry point named '<type>/onnx'.
+its stored export options (e.g. opset, dynamic batch axis). It is registered once, as the entry point '*/onnx':
+the converter of every component type that lists the target 'onnx' and has no converter of its own. A family
+needs no entry for its network type.
 """
 
 import onnx
@@ -21,7 +22,10 @@ def convert_torch_to_onnx(request: ConversionRequest) -> ComponentInfo:
     source = request.component
     component_class = get_component_class(source.type)
     if not issubclass(component_class, TorchNetwork):
-        raise TypeError(f"Component '{source.name}' ('{source.type}') is not a torch network and has no ONNX export.")
+        raise TypeError(
+            f"Component '{source.name}' ('{source.type}') lists the conversion 'onnx' but is not a torch network: "
+            "only a 'TorchNetwork' has an ONNX export."
+        )
     component = component_class.load(source, request.bundle, request.path_source_dir)
 
     path_file = f"{source.name}/{ONNX_MODEL_FILENAME}"

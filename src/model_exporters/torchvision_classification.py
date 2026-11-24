@@ -28,7 +28,6 @@ from torchvision.models import ResNet18_Weights, WeightsEnum, resnet18
 from inference_model_core import ConversionInfo, GraphInfo, ModelBundle, NetworkParams, TensorInfo
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
 from inference_model_core.definitions import ClassificationFromLogits, ImageToTensor, LoadImage, ResizeImage
-from inference_model_torch import register_component
 from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
 from model_exporters.definitions import TorchvisionClassifier
@@ -47,7 +46,6 @@ ARCHITECTURES: Dict[str, Tuple[Callable[..., nn.Module], WeightsEnum]] = {
 }
 
 
-@register_component
 class TorchvisionClassifierModule(TorchNetwork[TorchvisionClassifier]):
     def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
         builder, _ = _architecture(self.params.architecture)
@@ -116,7 +114,7 @@ def create_pretrained_torchvision_classification_bundle(
     )
 
 
-def create_trainer_archive_classification_bundle(
+def create_trainer_archive_bundle(
     path_archive: Union[str, Path], path_bundle: Union[str, Path], overwrite: bool = False
 ) -> ModelBundle:
     model, task, image_size, model_name = load_trainer_archive(path_archive)

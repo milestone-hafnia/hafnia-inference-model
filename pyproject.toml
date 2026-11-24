@@ -44,11 +44,9 @@ dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
 "rfdetr_network" = "model_exporters.rfdetr_detection:RFDETRModule"
 
 [project.entry-points."hafnia.inference_model_converters"]
-# "<source type>/<target>"
-"torchvision_classifier/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
-"torchvision_ssd_network/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
-"torchvision_faster_rcnn/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
-"rfdetr_network/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
+# "<source type>/<target>". The source type "*" is every component type without a converter of its own: every
+# torch network converts to ONNX with the same function, so a model family adds no entry.
+"*/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
 "onnx_network/openvino" = "inference_model_openvino.convert:convert_onnx_to_openvino"
 "onnx_network/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
 "openvino_network/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"

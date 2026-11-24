@@ -19,8 +19,8 @@ pytest.importorskip("rfdetr")
 pytest.importorskip("onnxruntime")
 import torch
 
-from model_exporters.registry import create_bundle_from_trainer_archive
 from model_exporters.rfdetr_detection import DEFAULT_SCORE_THRESHOLD
+from model_exporters.trainer_archive import create_bundle_from_trainer_archive
 
 pytestmark = pytest.mark.slow
 

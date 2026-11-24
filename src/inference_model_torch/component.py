@@ -15,10 +15,14 @@ stored as ONNX or OpenVINO IR files run on their own inference engine and still 
 
 A definition has one default implementation and can have alternatives on other inference engines, chosen with
 'inference_engine' when loading a graph (e.g. an ONNX network on OpenVINO instead of ONNX Runtime).
-Implementations register with the 'register_component' class decorator. Separately installed packages list
-theirs in the 'hafnia.inference_model_components' entry point group, named '<type>' for the default
-implementation and '<type>/<inference engine>' for an alternative: they are imported only when a graph needs
-them, so loading an ONNX bundle never imports OpenVINO.
+
+An implementation is registered in one way:
+- The standard components ('inference_model_torch.components') and components of the running program (e.g. of a
+  test) with the 'register_component' class decorator.
+- Components of installed packages as an entry point of the 'hafnia.inference_model_components' group, named
+  '<type>' for the default implementation and '<type>/<inference engine>' for an alternative. They need no
+  decorator: they are imported and checked only when a graph needs them, so loading an ONNX bundle never imports
+  OpenVINO.
 """
 
 import importlib
@@ -210,11 +214,7 @@ def register_component(component_class: Optional[C] = None, *, alternative: bool
         registry = _ALTERNATIVES if alternative else _DEFAULTS
         name = component_class.key() if alternative else component_class.definition.type
         registered_class = registry.get(name)
-        is_same_class = registered_class is not None and (
-            registered_class.__module__ == component_class.__module__
-            and registered_class.__qualname__ == component_class.__qualname__
-        )
-        if registered_class is not None and not is_same_class:
+        if registered_class is not None and registered_class is not component_class:
             raise ValueError(
                 f"Component '{name}' is already registered by '{registered_class.__qualname__}', "
                 f"can not register '{component_class.__qualname__}'."

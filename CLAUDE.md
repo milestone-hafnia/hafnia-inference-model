@@ -74,8 +74,11 @@ Each top-level package under `src/` is a separate concept that can later move to
 - A component type has one definition and one default implementation. An alternative implementation is
   registered as `<type>/<inference engine>` and chosen with `inference_engine=` at load time.
 - Implementations and converters outside the standard components are registered as entry points in
-  `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`). Run `uv sync`
-  after changing them.
+  `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`), and only
+  there: no `@register_component` or `@register_converter` on them. Run `uv sync` after changing them.
+- A new torch network needs no converter entry: `*/onnx` converts every torch network to ONNX.
+- A model family that reads trainer archives has a `create_trainer_archive_bundle` function in the module its
+  pretrained entry points name. There is no table of trainer models.
 - A pretrained model is one entry point per model name (`hafnia.inference_model_pretrained_models`), behind
   `ModelBundle.from_pretrained`. A model family is imported only when one of its models is asked for, so a
   new family never adds a dependency to the other models.

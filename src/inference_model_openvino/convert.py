@@ -12,8 +12,8 @@ from typing import Any, Dict, Iterator, Literal, Optional
 import nncf
 import openvino as ov
 
-from inference_model_core import ComponentInfo, ConversionRequest, NetworkParams, register_converter
-from inference_model_core.convert import TARGET_OPENVINO, TARGET_OPENVINO_INT8, CalibrationFeed
+from inference_model_core import ComponentInfo, ConversionRequest, NetworkParams
+from inference_model_core.convert import TARGET_OPENVINO_INT8, CalibrationFeed
 from inference_model_core.definitions.network import ONNX_NETWORK_TYPE, OPENVINO_NETWORK_TYPE
 from inference_model_torch.component import to_numpy
 
@@ -28,7 +28,6 @@ OPENVINO_OPTIONS = {"precision"}
 INT8_OPTIONS = {"preset", "ignored_node_patterns", "model_type"}
 
 
-@register_converter(ONNX_NETWORK_TYPE, TARGET_OPENVINO)
 def convert_onnx_to_openvino(request: ConversionRequest) -> ComponentInfo:
     """Options:
     precision: Weight precision of the IR. 'fp32' (default) keeps the ONNX weights. 'fp16' stores weights as
@@ -43,8 +42,6 @@ def convert_onnx_to_openvino(request: ConversionRequest) -> ComponentInfo:
     return _write_ir_component(request, model, precision, provenance)
 
 
-@register_converter(ONNX_NETWORK_TYPE, TARGET_OPENVINO_INT8)
-@register_converter(OPENVINO_NETWORK_TYPE, TARGET_OPENVINO_INT8)
 def quantize_to_openvino_int8(request: ConversionRequest) -> ComponentInfo:
     """Quantize the weights and activations of an FP32 network to INT8.
 

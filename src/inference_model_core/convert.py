@@ -6,9 +6,10 @@ into a target, which gives a component of another type (e.g. 'torchvision_ssd_ne
 'onnx_network'); chains such as torch -> onnx -> openvino are found automatically. Components that don't list
 the target are copied unchanged, so e.g. image processing stays as it is next to a converted network.
 
-Converters register with 'register_converter'. Separately installed packages list theirs in the
-'hafnia.inference_model_converters' entry point group, named '<source type>/<target>': they are imported only
-when used.
+Converters of installed packages are listed in the 'hafnia.inference_model_converters' entry point group, named
+'<source type>/<target>', and are imported only when used. The source type '*' names a converter for every
+component type that has no converter of its own for the target, e.g. '*/onnx' for all torch networks.
+'register_converter' registers a converter of the running program, e.g. in a test.
 """
 
 import tempfile
@@ -29,6 +30,7 @@ ENTRY_POINT_GROUP = "hafnia.inference_model_converters"
 TARGET_ONNX = "onnx"
 TARGET_OPENVINO = "openvino"
 TARGET_OPENVINO_INT8 = "openvino_int8"
+ANY_TYPE = "*"  # As the source type of a converter: every component type without a converter of its own
 # Type of a component after it was converted to a target
 TARGET_TYPES: Dict[str, str] = {
     TARGET_ONNX: ONNX_NETWORK_TYPE,
@@ -76,7 +78,8 @@ _CONVERTERS: Dict[ConverterKey, Converter] = {}
 def register_converter(source_type: str, target: str, target_type: Optional[str] = None) -> Callable:
     """Function decorator registering a converter of components of type 'source_type' to 'target'.
 
-    'target_type' is the type of the converted component. Only needed for targets this module doesn't know.
+    'source_type' can be '*' (see the module docstring). 'target_type' is the type of the converted component:
+    only needed for targets this module doesn't know.
     """
 
     def decorator(converter: Converter) -> Converter:
@@ -100,11 +103,17 @@ def list_converters() -> List[ConverterKey]:
 
 
 def get_converter(source_type: str, target: str) -> Converter:
-    key = ConverterKey(source_type, target)
+    """The converter of 'source_type' to 'target', or the one of any type ('*') when the type has none."""
+    available = list_converters()
+    for key in (ConverterKey(source_type, target), ConverterKey(ANY_TYPE, target)):
+        if key in available:
+            return _load_converter(key)
+    raise KeyError(f"No converter '{ConverterKey(source_type, target)}'. Available: {[str(k) for k in available]}")
+
+
+def _load_converter(key: ConverterKey) -> Converter:
     if key not in _CONVERTERS:
-        entry_point = _entry_point_converters().get(key)
-        if entry_point is None:
-            raise KeyError(f"No converter '{key}'. Available: {[str(k) for k in list_converters()]}")
+        entry_point = _entry_point_converters()[key]
         try:
             converter = entry_point.load()
         except ImportError as e:
@@ -216,7 +225,8 @@ def _find_chain(component: ComponentInfo, target: str) -> Optional[List[str]]:
     visited = {component.type}
     while queue:
         component_type, chain = queue.pop(0)
-        steps = [key.target for key in converters if key.source_type == component_type and key.target in supported]
+        sources = (component_type, ANY_TYPE)
+        steps = [key.target for key in converters if key.source_type in sources and key.target in supported]
         if target in steps:
             return [*chain, target]
         for step in steps:

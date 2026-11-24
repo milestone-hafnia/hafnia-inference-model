@@ -17,8 +17,8 @@ pytest.importorskip("onnxruntime")
 import torchvision.transforms.functional as F  # noqa: E402
 from torchvision.models import resnet18 as build_resnet18  # noqa: E402
 
-from model_exporters.registry import create_bundle_from_trainer_archive  # noqa: E402
 from model_exporters.torchvision_classification import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
+from model_exporters.trainer_archive import create_bundle_from_trainer_archive  # noqa: E402
 
 pytestmark = pytest.mark.slow
 

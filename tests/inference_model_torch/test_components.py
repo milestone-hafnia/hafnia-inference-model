@@ -1,6 +1,7 @@
 """Implementations compute a component definition on the torch graph engine: 'forward' takes the input ports of
 the definition and returns the outputs by port name."""
 
+from importlib.metadata import EntryPoint
 from typing import Any, Dict, Optional
 
 import pytest
@@ -20,7 +21,7 @@ from inference_model_core.definitions import (
     ResizeImage,
 )
 from inference_model_torch import Component, get_component_class, list_components, register_component
-from inference_model_torch.component import unregister_component
+from inference_model_torch.component import ENTRY_POINT_GROUP, find_alternative_class, unregister_component
 from inference_model_torch.components import TorchResizeImage
 from inference_model_torch.components.detection import select_anchor_detections, select_query_detections
 
@@ -84,6 +85,37 @@ def test_forward_must_take_the_ports_of_the_definition():
             register_component(component_class)
     with pytest.raises(TypeError, match="names no definition"):
         register_component(NoDefinition)
+
+
+class PackagedScale(Component[Scale]):
+    """As a component of an installed package: no decorator, it is listed as an entry point."""
+
+    def forward(self, values: torch.Tensor, offset: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        return {"scaled": values * self.params.factor}
+
+
+class WrongPackagedScale(Component[Scale]):
+    engine = "other"
+
+    def forward(self, numbers: torch.Tensor) -> Dict[str, Any]:
+        return {"scaled": numbers}
+
+
+def test_components_of_packages_are_registered_by_their_entry_point(monkeypatch):
+    entries = {
+        "scale": EntryPoint("scale", f"{__name__}:PackagedScale", ENTRY_POINT_GROUP),
+        "scale/other": EntryPoint("scale/other", f"{__name__}:WrongPackagedScale", ENTRY_POINT_GROUP),
+    }
+    monkeypatch.setattr("inference_model_torch.component._entry_point_components", lambda: entries)
+    try:
+        assert "scale" in list_components()  # Listed without importing it
+        assert get_component_class("scale") is PackagedScale
+        assert get_component_class("scale") is PackagedScale  # Registered by the first lookup
+        # The class is checked like a decorated one, when it is first needed
+        with pytest.raises(TypeError, match=r"'Scale' declares the inputs \['values'\]"):
+            find_alternative_class("scale", "other")
+    finally:
+        unregister_component(PackagedScale)
 
 
 def test_standard_components_are_implemented():
