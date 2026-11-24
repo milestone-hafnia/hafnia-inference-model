@@ -7,7 +7,7 @@ from hafnia.dataset.primitives import Bbox
 from helpers import DUMMY_CLASS_NAMES, make_bundle, random_image, write_dummy_bundle
 from PIL import Image
 
-from inference_model_core import GraphInferenceModel, ModelBundle, load_graph
+from inference_model_core import GraphInferenceModel, LoadSettings, ModelBundle, load_graph
 
 
 def test_graph_inference_model_from_path(tmp_path, dummy_network):
@@ -28,6 +28,24 @@ def test_graph_inference_model_from_bundle(tmp_path, dummy_network):
     assert model.predict(image) == GraphInferenceModel.from_path(path_bundle, params={"score_threshold": 0.5}).predict(
         image
     )
+
+
+def test_load_settings(tmp_path, dummy_network):
+    """'from_path', 'from_bundle' and 'load_graph' take the same settings, see 'LoadSettings'."""
+    path_bundle = write_dummy_bundle(tmp_path / "model.zip")
+    image = random_image(32, 32)
+    expected = GraphInferenceModel.from_path(path_bundle).predict(image)
+
+    # A setting that is 'None' has its default
+    defaults = dict.fromkeys(LoadSettings.__annotations__)
+    assert GraphInferenceModel.from_path(path_bundle, **defaults).predict(image) == expected
+    assert GraphInferenceModel.from_bundle(ModelBundle.from_path(path_bundle), **defaults).predict(image) == expected
+
+    for load in (GraphInferenceModel.from_path, load_graph):
+        with pytest.raises(TypeError, match=r"Unknown load settings \['devise'\]. Settings: \['device', "):
+            load(path_bundle, devise="CPU")
+        with pytest.raises(KeyError, match="No graph engine 'numpy'"):
+            load(path_bundle, graph_engine="numpy")
 
 
 def test_from_bundle_needs_the_files_on_disk(dummy_network):
@@ -53,20 +71,22 @@ def test_predict_batch(tmp_path, dummy_network):
         model.predict_batch([random_image(8, 8)], sample_dicts=[{}, {}])
 
 
-def test_params_and_write_model(tmp_path, dummy_network):
+def test_params_are_not_part_of_the_bundle(tmp_path, dummy_network):
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
     model = GraphInferenceModel.from_path(path_bundle, params={"score_threshold": 0.5})
     assert [p.confidence for p in model.predict(random_image(32, 32))] == pytest.approx([0.9])
 
-    copy = model.write_model(tmp_path / "copy")
-    assert copy.path == tmp_path / "copy"
-    assert ModelBundle.from_path(copy.path) == ModelBundle.from_path(path_bundle)  # Overrides are not written
+    # A loaded model is written again through its bundle: overrides only apply to the loaded model
+    copy = model.get_model_info().write(tmp_path / "copy")
+    assert ModelBundle.from_path(copy.path) == ModelBundle.from_path(path_bundle)
+    assert [p.confidence for p in GraphInferenceModel.from_bundle(copy).predict(random_image(32, 32))] != [0.9]
 
 
 def test_graph_needs_image_input_and_predictions_output(tmp_path, dummy_network):
     bundle = make_bundle()
     graph_info = bundle.graph.model_copy(update={"outputs": ["boxes"]})
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
+
     graph = load_graph(path_bundle)
     graph.bundle = bundle.model_copy(update={"graph": graph_info})
 

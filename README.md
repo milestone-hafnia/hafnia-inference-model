@@ -199,7 +199,7 @@ from inference_model_core import GraphInferenceModel, ModelBundle
 # Write a pretrained model as a bundle with a torch network, and convert it
 print(ModelBundle.list_pretrained())  # The names. A model only needs the dependencies of its own framework
 bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")  # Writes and returns it
-bundle = ModelBundle.from_path("model_torch.zip")  # Or read a bundle: a folder or a zip. 'from_zip' only takes a zip
+bundle = ModelBundle.from_path("model_torch.zip")  # Or read a bundle: a folder or a zip
 bundle_onnx = bundle.convert("onnx", "model_onnx.zip")  # Writes the new bundle and returns it
 bundle_onnx.convert("openvino", "model_openvino.zip")  # Or options={"precision": "fp16"}
 bundle_onnx.convert(
@@ -211,7 +211,7 @@ bundle_onnx.convert(
 # A bundle is the description in model_info.json plus the place of its files
 print(bundle_onnx.path, [f"{c.name} ({c.type})" for c in bundle_onnx.graph.components])
 bundle_onnx.write("model_onnx_dir")  # As a folder
-bundle_onnx.write_zip("model_onnx_copy.zip")  # As a zip
+bundle_onnx.write("model_onnx_copy.zip")  # As a zip: a path ending with '.zip'
 
 # Run any bundle: the graph in model_info.json says how
 model = GraphInferenceModel.from_bundle(bundle_onnx)  # A bundle you already hold

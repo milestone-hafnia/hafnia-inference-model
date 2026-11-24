@@ -102,8 +102,6 @@ def test_load_for_outputs_loads_only_needed_components(tmp_path):
     assert graph.run({"image": IMAGES[0]}, outputs=["input_tensor"])["input_tensor"].shape == (3, 32, 32)
     with pytest.raises(ValueError, match=r"need components \['network', 'to_bboxes'\], which are not loaded"):
         graph.run({"image": IMAGES[0]})
-    with pytest.raises(ValueError, match="partially loaded graph"):
-        graph.write(tmp_path / "copy.zip")
 
 
 def test_timings_per_component(tmp_path, dummy_network):
@@ -176,14 +174,17 @@ def test_duplicate_registration(dummy_network):
         register_component(OtherNetwork)
 
 
-def test_write_round_trip(tmp_path, dummy_network):
-    graph = load_graph(write_dummy_bundle(tmp_path / "model_dir"))
-    written = graph.write(tmp_path / "copy.zip")
-    assert written.path == tmp_path / "copy.zip"
-    copy = load_graph(written)
+def test_device_names_of_other_engines(tmp_path, dummy_network):
+    path_bundle = write_dummy_bundle(tmp_path / "model.zip")
+    # 'GPU' is no torch device: it is for the engine of the network, and the torch components use the CPU
+    graph = load_graph(path_bundle, device="GPU")
+    assert {component.device.type for component in graph.components} == {"cpu"}
 
-    assert network(copy).detections == DUMMY_DETECTIONS
-    assert copy.bundle == graph.bundle
+    # Without the network every component runs on torch, so no engine would use the device
+    for device in ("GPU", "cuda0"):
+        with pytest.raises(ValueError, match=f"Unsupported device '{device}'"):
+            load_graph(path_bundle, device=device, outputs=["input_tensor"])
+    assert load_graph(path_bundle, device="CPU", outputs=["input_tensor"])
 
 
 def test_batched_components_need_equal_shapes(tmp_path, dummy_network):
@@ -195,7 +196,7 @@ def test_batched_components_need_equal_shapes(tmp_path, dummy_network):
         inputs=["image"], outputs=["boxes"], components=[components["load_image"], to_tensor, components["network"]]
     )
     path_bundle = tmp_path / "model.zip"
-    bundle.model_copy(update={"graph": graph_info}).write_zip(path_bundle, files={DUMMY_NETWORK_FILE: b"{}"})
+    bundle.model_copy(update={"graph": graph_info}).write(path_bundle, files={DUMMY_NETWORK_FILE: b"{}"})
 
     with pytest.raises(ValueError, match="Can't batch input 'images' of component 'network'"):
         load_graph(path_bundle).run_batch({"image": IMAGES})

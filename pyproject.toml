@@ -8,7 +8,6 @@ dependencies = [
     "cyclopts==4.5.1",
     "hafnia>=0.8.7",
     "numpy>=1.26",
-    "opencv-python-headless>=4.4.0", # Same OpenCV flavor as hafnia to avoid conflicting cv2 installs
     "pydantic>=2.10.4",
 ]
 

@@ -8,13 +8,20 @@ components runs on the GPU from the image to the detections.
 """
 
 import time
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Type
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Type, Unpack
 
 import torch
 
-from inference_model_core.bundle_io import FileSource, PathLike
-from inference_model_core.model_bundle import ComponentInfo, ModelBundle, write_by_suffix
-from inference_model_torch.component import Component, LoadOptions, find_alternative_class, get_component_class
+from inference_model_core.graph import LoadSettings
+from inference_model_core.model_bundle import ComponentInfo, ModelBundle
+from inference_model_torch.component import (
+    ENGINE,
+    Component,
+    LoadOptions,
+    find_alternative_class,
+    get_component_class,
+    is_torch_device,
+)
 
 
 class TorchModelGraph:
@@ -32,25 +39,27 @@ class TorchModelGraph:
         if loaded_order != [name for name in graph_order if name in set(loaded_order)]:
             raise ValueError(f"Components {loaded_order} are not in the order of the graph {graph_order}.")
 
-    # --- storage -------------------------------------------------------------------------------------
+    # --- loading -------------------------------------------------------------------------------------
     @classmethod
     def load(
         cls,
         bundle: ModelBundle,
-        inference_engine: Optional[str] = None,
-        params: Optional[Mapping[str, Any]] = None,
-        device: str = "CPU",
-        num_threads: Optional[int] = None,
-        engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
         outputs: Optional[Sequence[str]] = None,
+        **load_settings: Unpack[LoadSettings],
     ) -> "TorchModelGraph":
-        """Load a model bundle that has its files on disk. See 'inference_model_core.load_graph' for the arguments.
+        """Load a model bundle that has its files on disk. Called by 'inference_model_core.load_graph', which
+        describes the arguments.
 
         'device' is 'CPU', 'CUDA' or a torch device name for the components written in torch. Device names of
-        another inference engine (e.g. OpenVINO's 'GPU') only apply to that engine: torch then uses the CPU.
+        another inference engine (e.g. OpenVINO's 'GPU') only apply to that engine: torch then uses the CPU. Such a
+        name is an error when every component runs on torch, as no engine would use it.
         'num_threads' also sets torch's global intra-op threads.
         """
-        options = LoadOptions(device=device, num_threads=num_threads, engine_options=engine_options or {})
+        inference_engine = load_settings.get("inference_engine")
+        device = load_settings.get("device") or "CPU"
+        num_threads = load_settings.get("num_threads")
+        engine_options = load_settings.get("engine_options") or {}
+        options = LoadOptions(device=device, num_threads=num_threads, engine_options=engine_options)
         if num_threads is not None:
             torch.set_num_threads(num_threads)
         with bundle.open_dir() as path_dir:
@@ -63,27 +72,20 @@ class TorchModelGraph:
                     f"No component of '{bundle.path}' runs on inference engine '{inference_engine}'. Component "
                     f"types: {sorted({info.type for info in infos})}."
                 )
+            if not is_torch_device(device) and engines <= {ENGINE}:
+                raise ValueError(
+                    f"Unsupported device '{device}'. The components of '{bundle.path}' run on torch, which takes "
+                    "'CPU', 'CUDA' or a torch device name such as 'cuda:1'."
+                )
             unknown_engines = sorted(set(options.engine_options) - engines)
             if unknown_engines:
                 raise ValueError(f"'engine_options' are given for engines {unknown_engines}, which run no component.")
-            param_overrides = _split_param_overrides(infos, classes, params or {})
+            param_overrides = _split_param_overrides(infos, classes, load_settings.get("params") or {})
             components = [
                 classes[info.name].load(info, bundle, path_dir, options, params=param_overrides[info.name])
                 for info in infos
             ]
         return cls(bundle, components)
-
-    def write(self, path_bundle: PathLike, overwrite: bool = False) -> ModelBundle:
-        """Write the model as a bundle and return the written bundle. A path ending with '.zip' creates a zip,
-        otherwise a folder."""
-        loaded = {component.info.name for component in self.components}
-        not_loaded = [info.name for info in self.bundle.graph.components if info.name not in loaded]
-        if not_loaded:
-            raise ValueError(f"Can't write a partially loaded graph. Components {not_loaded} are not loaded.")
-        files: Dict[str, FileSource] = {}
-        for component in self.components:
-            files.update(component.files())
-        return write_by_suffix(self.bundle, path_bundle, files=files, overwrite=overwrite)
 
     # --- execution -----------------------------------------------------------------------------------
     def run(self, inputs: Mapping[str, Any], outputs: Optional[Sequence[str]] = None) -> Dict[str, Any]:

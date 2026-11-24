@@ -7,7 +7,7 @@ definitions and runs the graph, so this package needs no tensor library (see doc
 from inference_model_core.bundle_io import MODEL_INFO_FILENAME
 from inference_model_core.convert import ConversionRequest, list_converters, register_converter
 from inference_model_core.definition import ComponentDefinition, Port, Ports
-from inference_model_core.graph import ModelGraph, list_graph_engines, load_graph
+from inference_model_core.graph import LoadSettings, ModelGraph, list_graph_engines, load_graph
 from inference_model_core.inference_model import GraphInferenceModel
 from inference_model_core.model_bundle import (
     ComponentInfo,
@@ -28,6 +28,7 @@ __all__ = [
     "GraphInferenceModel",
     "GraphInfo",
     "ImageTransform",
+    "LoadSettings",
     "ModelBundle",
     "ModelGraph",
     "NetworkParams",

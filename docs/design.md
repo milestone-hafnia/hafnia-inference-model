@@ -1,9 +1,9 @@
 # package-openvino: Generic Model Export and Inference
 
 Status: implemented. Designed and reviewed on 2026-11-18, redesigned on 2026-11-20 as a graph of
-components, and on 2026-11-23 split into component definitions and a torch graph engine (section 3).
-Since 2026-11-24 the user interface is the `ModelBundle` and `GraphInferenceModel` classes (3.5, 3.6).
-See [section 11](#11-decisions) for the decisions.
+components, and on 2026-11-23 split into component definitions and a torch graph engine (section 2).
+Since 2026-11-24 the user interface is the `ModelBundle` and `GraphInferenceModel` classes (2.5, 2.6).
+See [section 10](#10-decisions) for the decisions.
 Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
 `../trainer-object-detection` and `../trainer-classification`.
 
@@ -38,40 +38,13 @@ installed, not on one specific architecture.
 
 ---
 
-## 2. Where we start from (what already exists)
-
-| Thing | Where | Notes |
-|---|---|---|
-| `InferenceModel` ABC | `hafnia/src/hafnia/dataset/benchmark/inference_model.py` | `predict(image, sample_dict) -> List[Primitive]`, `predict_batch(...)` (default loops over `predict`), `get_model_info() -> ModelInfo`. No load/save, no raw predict. |
-| `ModelInfo` | `hafnia/src/hafnia/dataset/hafnia_dataset_types.py:547` | Subclass of `TasksInfo`: `tasks`, `name`, `version`, `description`, reference URLs, free-form `meta`. Nothing about format, engine, files, pre/post-processing. |
-| `TaskInfo` / `ClassInfo` | same file, `:91` | Primitive type + ordered list of unique class names + task name. Serializes the primitive as a string, which works well for JSON. |
-| Benchmark | `hafnia/src/hafnia/dataset/benchmark/benchmark.py` | `run_inference_on_dataset` / `run_benchmark` work on any `InferenceModel` and compute accuracy metrics (mAP etc.). **They don't measure latency.** |
-| RF-DETR wrapper | `trainer-object-detection/src/trainer_object_detection/wrapped_model.py` | Zip = `model_config.json` + weights. Config is RF-DETR specific (`InitModelConfig`). |
-| ResNet wrapper | `trainer-classification/src/trainer_classification/wrapped_model.py` | Same zip pattern, own `ModelConfig`. |
-| OpenVINO export | `trainer-object-detection/scripts/export_openvino.py` | RF-DETR → temporary ONNX → `ov.convert_model` → optional NNCF INT8 PTQ (calibrated on a Hafnia dataset) → writes OpenVINO Model API `rt_info` (mean/scale, resize type, labels) for DLStreamer. |
-| Benchmark script | `trainer-object-detection/scripts/benchmark.py` | Loads dataset (hidden dataset on platform, sample locally), picks up checkpoint from `MDI_CHECKPOINT_DIR`, optional class mapping, logs metrics through `HafniaLogger`. |
-| Platform conventions | `HafniaLogger`, `hafnia.utils` | Input model = `*.zip` in `logger.path_model_checkpoints()`; output = `logger.path_model()`; dataset via `get_dataset_path_in_hafnia_cloud()` when `HAFNIA_CLOUD=true`. |
-
-Takeaways:
-
-- The **zip with a JSON description** is already the de-facto pattern in both trainers. We
-  generalize it rather than invent something new.
-- The existing OpenVINO exporter already writes pre-processing metadata into the IR. That
-  is the same idea as "model info", but stored in OpenVINO-specific form. We should produce
-  that `rt_info` as a by-product of our own model info, so Intel tooling (Model API,
-  DLStreamer, OVMS) keeps working.
-- The quantization code is mostly generic already. The only RF-DETR specific part is the
-  calibration preprocessing. Once preprocessing is described in model info, calibration
-  becomes generic too.
-
----
-
-## 3. Core concepts
+## 2. Core concepts
 
 > **Redesigned on 2026-11-20: a model is a graph of components.** Until then a model was run by a
 > *flavor*, one class per (engine, framework, decoder), with fixed preprocess / predict / postprocess
 > stages. Four model families on two engines needed eight flavor classes, and every new family would
-> add one per engine. Section 11 lists the decisions, "The flavor design" at the end what it was.
+> add one per engine. Section 10 lists the decisions, and the git history has the flavor design
+> (up to commit `e890172`).
 >
 > **Changed on 2026-11-23: definitions and implementations are separate, and torch runs the graph.**
 > The bundle only defines the model: a component has a type, whose *definition* names its parameters
@@ -79,7 +52,7 @@ Takeaways:
 > graph engine, torch, in which components exchange `torch.Tensor`s. Components no longer have a
 > `runtime`, and running a graph needs torch whatever format the network has.
 
-### 3.1 Model bundle (storage format)
+### 2.1 Model bundle (storage format)
 
 A model bundle is a **single zip file** (so it fits the existing "checkpoint is a zip" platform
 convention) or the same content as a directory:
@@ -102,7 +75,7 @@ Rules:
 - **Loading a bundle never runs code from it.** Processing steps are named component types whose
   code lives in the installed packages. Weights are read as data (`torch.load(weights_only=True)`).
 
-### 3.2 Model info: tasks and a graph
+### 2.2 Model info: tasks and a graph
 
 Model info answers two questions:
 
@@ -142,7 +115,7 @@ a component reads comes from a graph input or an earlier component, and every ke
 exactly once. Parameters and ports are checked against the definition when a graph engine loads
 the bundle, or when a definition is connected into a graph.
 
-### 3.3 Components: definitions and implementations
+### 2.3 Components: definitions and implementations
 
 A component has two parts, in two packages.
 
@@ -257,7 +230,7 @@ How the torch implementations differ from the NumPy ones they replaced (2026-11-
   at most 0.006 (SSD), 0.013 (ResNet18) and 0.029 (RF-DETR), all from the one gray level of the
   resize. Faster R-CNN has no resize component and is unchanged.
 
-### 3.4 Execution: the torch graph engine
+### 2.4 Execution: the torch graph engine
 
 `load_graph` loads the components of a bundle with a graph engine, which runs them in order on the
 data dictionary. Graph engines are listed in the entry point group
@@ -277,7 +250,8 @@ data dictionary. Graph engines are listed in the entry point group
   around it.
 - `device` names are shared by all inference engines. `CPU`, `CUDA` and torch device names apply to
   the torch components. Any other name (OpenVINO's `GPU`, `NPU`, `AUTO`) only applies to its engine,
-  and the torch components then use the CPU.
+  and the torch components then use the CPU. When every component of the graph runs on torch, such a
+  name is an error: no engine would use it, and the model would silently run on the CPU.
 - The graph runs under `torch.no_grad()`.
 - `run(inputs, outputs=[...])` returns intermediate values and only runs the components needed for
   them. Calibration and the comparison of network outputs use this.
@@ -306,7 +280,7 @@ dataset, one image per call, same ONNX or torch network in both):
   the GPU than they were in NumPy on the CPU. Keeping tensors on the GPU pays off for larger images
   and batches, which were not measured.
 
-### 3.5 Loading: `GraphInferenceModel.from_path()` and `from_bundle()`
+### 2.5 Loading: `GraphInferenceModel.from_path()` and `from_bundle()`
 
 ```python
 model = GraphInferenceModel.from_path("ssdlite320_onnx.zip")  # default implementations
@@ -328,7 +302,10 @@ model = GraphInferenceModel.from_bundle(bundle.convert("openvino", "model_openvi
 of a bundle with an edited description keeps the place of the original files, so it loads the
 edited description with those files.
 
-Load-time settings, none of them stored in the bundle:
+Load-time settings, none of them stored in the bundle. They are defined once, as the typed dictionary
+`LoadSettings`, and are the keyword arguments of `from_path`, `from_bundle` and `load_graph`
+(`**load_settings: Unpack[LoadSettings]`), so a type checker knows them and a new setting is added in
+one place. A setting that is left out or `None` has its default, and an unknown one is an error:
 
 - **`inference_engine`**: every component with an alternative implementation on that inference
   engine runs on it, the others on their default implementation. It is an error if no component
@@ -340,15 +317,20 @@ Load-time settings, none of them stored in the bundle:
   `{"openvino": {"performance_hint": "LATENCY"}}`.
 - **`graph_engine`**: `torch`, the only one.
 
-### 3.6 Conversion
+`GraphInferenceModel` **extends** Hafnia's `InferenceModel`, so `hafnia.dataset.benchmark` works
+unchanged, and `get_model_info()` returns the `ModelBundle`, which is a Hafnia `ModelInfo` with
+`tasks`. It requires the graph input `image` and an output `predictions`. `load_graph` gives the
+general `ModelGraph`, with any inputs and outputs.
+
+### 2.6 Conversion
 
 A `ModelBundle` is the description in `model_info.json` plus the place of its files, once it is
 read or written:
 
 ```python
-bundle = ModelBundle.from_path("model_torch.zip")  # A folder or a zip. 'from_zip' only takes a zip
-bundle.write("model_dir")  # Always a folder
-bundle.write_zip("model.zip")  # Always a zip
+bundle = ModelBundle.from_path("model_torch.zip")  # A folder or a zip
+bundle.write("model_dir")  # A folder
+bundle.write("model.zip")  # A zip: a path ending with '.zip'
 ```
 
 Reading only reads the model info and checks that the listed files are there. A bundle created in
@@ -364,7 +346,7 @@ bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_tor
 
 The names are the entry points of the group `hafnia.inference_model_pretrained_models`, one per
 model. Each points at a function `(name, path_bundle, overwrite) -> ModelBundle` of a model family
-(8.1), which is imported only when one of its models is asked for. So `resnet18` needs torch and
+(7.1), which is imported only when one of its models is asked for. So `resnet18` needs torch and
 torchvision but not `rfdetr`, listing the names imports nothing, and `inference_model_core` stays free
 of torch. A missing dependency gives an error that names the model and the function, and a name that
 two packages register is an error too. Another package adds its models to the same group. Unlike
@@ -406,126 +388,30 @@ bundle_onnx.convert("openvino_int8", "model_int8.zip", calibration_inputs=[{"ima
 - A converted component keeps the conversions that still apply (an ONNX network keeps `openvino`
   and `openvino_int8`, an FP32 IR network `openvino_int8`, an INT8 network none) and records its
   parent in `provenance`.
-
----
-
-## 4. Interfaces
-
-The bundle definition, in `src/inference_model_core`:
-
-```python
-class ComponentDefinition(BaseModel):  # definition.py
-    type: ClassVar[str]
-    input_ports: ClassVar[Tuple[Port, ...]]  # Port(name, description, optional)
-    output_ports: ClassVar[Tuple[Port, ...]]
-    # fields of a subclass = the parameters of the component
-
-    def ports(self) -> Ports: ...  # the declared ports (networks: their tensor names)
-    def connect(
-        self, name, inputs, outputs, files=None, batched=False, conversions=None, provenance=None
-    ) -> ComponentInfo: ...  # the component as a step of a graph
-    @classmethod
-    def from_info(cls, info, params=None) -> Self: ...  # validated, with parameter overrides
-
-
-class ModelGraph(Protocol):  # graph.py: what every graph engine provides
-    bundle: ModelBundle
-    components: Sequence[Any]
-
-    def run(self, inputs, outputs=None) -> Dict[str, Any]: ...  # one sample
-    def run_batch(self, inputs, outputs=None, timings=None) -> Dict[str, List[Any]]: ...
-    def write(self, path_bundle, overwrite=False) -> ModelBundle: ...
-
-
-def load_graph(
-    bundle,  # a ModelBundle or the path of a bundle folder or zip
-    graph_engine="torch",
-    inference_engine=None,
-    params=None,
-    device="CPU",
-    num_threads=None,
-    engine_options=None,
-    outputs=None,
-) -> ModelGraph: ...
-
-
-class GraphInferenceModel(hafnia.InferenceModel):  # inference_model.py
-    @classmethod
-    def from_path(
-        cls,
-        path_bundle,
-        inference_engine=None,
-        params=None,
-        device="CPU",
-        num_threads=None,
-        engine_options=None,
-        graph_engine="torch",
-    ) -> "GraphInferenceModel": ...
-    @classmethod
-    def from_bundle(cls, bundle, **load_settings) -> "GraphInferenceModel": ...  # the same settings as 'from_path'
-    def predict(self, image, sample_dict=None) -> List[Primitive]: ...
-    def predict_batch(self, images, sample_dicts=None) -> List[List[Primitive]]: ...
-    def get_model_info(self) -> ModelBundle: ...
-    def write_model(self, path_bundle, overwrite=False) -> ModelBundle: ...  # the written bundle
-
-
-class ModelBundle(hafnia.ModelInfo):  # model_bundle.py: the content of model_info.json (section 5)
-    path: Optional[Path]  # folder or zip of the files, 'None' for a bundle in memory
-
-    @classmethod
-    def from_path(cls, path_bundle) -> "ModelBundle": ...  # folder or zip
-    @classmethod
-    def from_zip(cls, path_zip) -> "ModelBundle": ...  # zip only
-    @classmethod
-    def list_pretrained(cls) -> List[str]: ...  # names of the pretrained models, imports nothing
-    @classmethod
-    def from_pretrained(cls, name, path_bundle, overwrite=False) -> "ModelBundle": ...  # writes the bundle
-    def read_file(self, relative_path) -> bytes: ...
-    def open_dir(self) -> ContextManager[Path]: ...  # a folder with the files, extracted from a zip
-    def write(self, path_dir, files=None, overwrite=False) -> "ModelBundle": ...  # a folder
-    def write_zip(self, path_zip, files=None, overwrite=False) -> "ModelBundle": ...
-    def convert(
-        self, target, path_bundle, options=None, calibration_inputs=None, provenance=None, overwrite=False
-    ) -> "ModelBundle": ...  # code in convert.py
-
-
-Converter = Callable[[ConversionRequest], ComponentInfo]
-```
-
-The torch graph engine, in `src/inference_model_torch`:
-
-```python
-class Component(ABC, Generic[D]):           # component.py: 'Component[ResizeImage]' sets 'definition'
-    definition: ClassVar[Type[ComponentDefinition]]
-    engine: ClassVar[str] = "torch"                # the inference engine that computes it
-    params: D                                      # the definition with the component's parameters
-    context: ComponentContext                      # component info, model info, bundle directory, load options
-
-    def forward(self, ...) -> Mapping[str, Any]: ...   # input ports as parameters -> outputs by port name
-    def setup(self) -> None: ...                       # read files, look up a task
-    def files(self) -> Dict[str, FileSource]: ...      # for writing the bundle
-    device: torch.device                               # where it takes its input tensors
-
-class TorchModelGraph:                      # graph.py: implements ModelGraph
-    @classmethod
-    def load(cls, path_bundle, inference_engine=None, params=None, device="CPU", num_threads=None,
-             engine_options=None, outputs=None) -> TorchModelGraph: ...
-```
-
-- `GraphInferenceModel` **extends** Hafnia's `InferenceModel`, so `hafnia.dataset.benchmark` works
-  unchanged. `get_model_info()` returns a `ModelInfo` (with `tasks`), as Hafnia expects.
-- `ModelGraph` is the general interface: any inputs and outputs. `GraphInferenceModel` requires
-  the input `image` and an output `predictions`.
-- `FileNetwork` (`inference_model_torch/network.py`) is the base class of networks in model files:
-  it keeps the files for writing, compares the model info with the stored graph at load time, and
-  converts between torch tensors and the arrays of the inference engine (`infer`). `TorchNetwork` is
-  the base class of torch networks: it builds the module in `setup()` and has the `export_onnx`
-  hook.
 - A converter gets a `ConversionRequest` (the component, its files, the merged options, a
   calibration feed) and returns the component info of the converted component, with the same name
   and data keys. The calibration feed yields the tensors of the graph engine.
 
-## 5. Model info schema
+---
+
+## 3. Interfaces
+
+The interface is not repeated here, as a copy goes stale with every change: the usage is in the
+[README](../README.md#usage), and the arguments are in the docstrings of `ModelBundle`,
+`GraphInferenceModel` and `LoadSettings` (`src/inference_model_core`) and of `Component`
+(`src/inference_model_torch/component.py`).
+
+Two base classes that implementations of networks build on (`inference_model_torch/network.py`):
+
+- `FileNetwork` is the base class of networks in model files: it compares the model info with the
+  stored graph at load time, and converts between torch tensors and the arrays of the inference
+  engine (`infer`).
+- `TorchNetwork` is the base class of torch networks: it builds the module in `setup()` and has the
+  `export_onnx` hook.
+
+---
+
+## 4. Model info schema
 
 Implemented as `ModelBundle(ModelInfo)` in `src/inference_model_core/model_bundle.py`, format
 version `3.0.0`. A bundle of another major version is rejected with a message to create it again.
@@ -622,74 +508,14 @@ iteration (Q5).
 
 ---
 
-## 6. Package layout
+## 5. Package layout
 
 The brief asks for concepts to be separated now so they can move to their own repos later.
 The cleanest way: **several top-level Python packages inside one distribution.** When a
 module later moves to its own repo, import paths stay the same.
 
-```
-package-openvino/
-├── pyproject.toml            # hatch: packages = [all src/* below]; entry points for the graph engine, components, converters and pretrained models
-├── Dockerfile                # same pattern as trainer-object-detection
-├── .hafniaignore  .python-version  README.md
-├── docs/design.md            # this document (+ design_review.md, a review of the flavor design)
-├── src/
-│   ├── inference_model_core/        # the bundle definition, no implementations → later: hafnia
-│   │   ├── model_bundle.py          #   ModelBundle (read, write, convert), GraphInfo, ComponentInfo, ConversionInfo
-│   │   ├── bundle_io.py             #   internal: files of a zip or folder bundle
-│   │   ├── definition.py            #   ComponentDefinition (pydantic model + ports), Port
-│   │   ├── definitions/             #   standard definitions: image, detection, classification, network
-│   │   ├── transform.py             #   ImageTransform: the data item between resize and box mapping
-│   │   ├── graph.py                 #   ModelGraph (interface), load_graph, graph engine lookup
-│   │   ├── inference_model.py       #   GraphInferenceModel (from_path)
-│   │   └── convert.py               #   the code behind ModelBundle.convert, converter registry
-│   ├── inference_model_torch/       # the torch graph engine
-│   │   ├── component.py             #   Component (implementation base class), registry, load options
-│   │   ├── graph.py                 #   TorchModelGraph: load, write, run, run_batch
-│   │   ├── components/              #   torch implementations of the standard definitions, as
-│   │   │                            #   functions on tensors plus thin classes (image, detection, classification)
-│   │   ├── network.py               #   FileNetwork (networks in model files), TorchNetwork (torch modules)
-│   │   ├── convert.py               #   converter torch network -> ONNX
-│   │   └── onnx_export.py           #   shared ONNX export settings
-│   ├── inference_model_onnxruntime/ # → later: inference-model-onnx-runtime repo
-│   │   └── components.py            #   'onnx_network' on ONNX Runtime
-│   ├── inference_model_openvino/    # → later: inference-model-openvino repo
-│   │   ├── components.py            #   'openvino_network' on OpenVINO, 'onnx_network' as an alternative
-│   │   └── convert.py               #   converters to OpenVINO IR: FP32, FP16, INT8 (NNCF)
-│   ├── model_exporters/             # model families: network definitions, torch implementations, bundle helpers
-│   │   ├── registry.py              #   trainer archive → bundle helper
-│   │   ├── trainer_archive.py       #   trainer model archives (model_config.json + weights)
-│   │   ├── class_names.py           #   one task class per model label, placeholder names
-│   │   ├── definitions.py           #   definitions of the families' torch networks (torch free)
-│   │   ├── torchvision_detection.py
-│   │   ├── torchvision_classification.py
-│   │   └── rfdetr_detection.py
-│   └── package_openvino/            # glue that stays in the trainer: benchmarking, platform helpers
-│       ├── class_mapping.py         #   class mappings as data (JSON file or inline JSON)
-│       ├── latency.py               #   latency per component
-│       ├── metrics.py               #   Hafnia's benchmark with prediction classes aligned by name
-│       └── platform.py              #   checkpoint discovery, dataset loading
-├── scripts/
-│   ├── export_to_onnx.py            # any supported model: trainer archive or pretrained name
-│   ├── export_onnx_to_openvino.py
-│   └── benchmark.py
-├── examples/
-│   ├── example_inference_model.py   # basic flow: bundle, ONNX, run, convert, run on OpenVINO, draw, benchmark
-│   └── example_compare_models.py    # models x networks/engines: mAP + latency table
-└── tests/                       # one folder per module under src/, shared helpers at the root
-    ├── conftest.py                  # session fixtures: micro dataset, torch, ONNX and OpenVINO bundles
-    ├── helpers.py                   # dummy network (definition and implementation), detection matching
-    ├── micro_datasets.py            # creates tests/data/micro-* from the Hafnia platform (8 COCO images)
-    ├── data/micro-coco-2017/
-    ├── inference_model_core/        # test_model_bundle, test_definition, test_bundle, test_convert, test_inference_model
-    ├── inference_model_torch/       # test_graph, test_components, test_image, test_detection, test_classification
-    ├── inference_model_onnxruntime/ # test_onnxruntime_components
-    ├── inference_model_openvino/    # test_openvino_components (parity with ONNX Runtime), test_openvino_convert
-    ├── model_exporters/             # parity with the original torch models, per family
-    ├── package_openvino/            # test_latency, test_metrics, test_platform, test_class_mapping
-    └── scripts/                     # test_benchmark_script
-```
+The [README](../README.md#layout) lists what each package is for. The repository itself is the
+file tree.
 
 Test file names are unique across folders: the folders have no `__init__.py` (a
 `tests/inference_model_core` package would shadow the real one), so pytest imports test files by
@@ -709,7 +535,7 @@ Dependency rules:
 
 ---
 
-## 7. End-to-end flow
+## 6. End-to-end flow
 
 ```mermaid
 flowchart LR
@@ -733,20 +559,20 @@ same dataset is the main way to confirm that conversion and quantization didn't 
 
 ---
 
-## 8. Model families and scripts
+## 7. Model families and scripts
 
 All scripts follow the trainer conventions: `cyclopts` CLI, `HafniaLogger`, input bundle taken
 from the checkpoint dir when present (otherwise a `--model-path`), output written to
 `logger.path_model()`, `auto_save_command_builder_schema` for the `*.schema.json` files.
 
-### 8.1 Model families (`model_exporters`)
+### 7.1 Model families (`model_exporters`)
 
 Each family module has the torch component of its network and functions that write a bundle with
 that network: `create_torchvision_detection_bundle`, `create_torchvision_classification_bundle`,
 `create_rfdetr_detection_bundle`. Two things pick the family, importing it only then, so
 torchvision models don't need `rfdetr`: `ModelBundle.from_pretrained(name, path)` for a pretrained
 model, through the family's `create_pretrained_*_bundle` function that is registered as the entry
-point of the model name (3.6), and `create_bundle_from_trainer_archive(path_archive, path)` in
+point of the model name (2.6), and `create_bundle_from_trainer_archive(path_archive, path)` in
 `registry.py` for a trainer archive. They all return the written `ModelBundle`, so the bundle is
 converted or loaded without reading it again:
 `ModelBundle.from_pretrained(name, path).convert("onnx", path_onnx)`.
@@ -789,7 +615,7 @@ converted or loaded without reading it again:
 
 - The graph redesign (2026-11-20) changed no numbers: the ONNX networks, their inputs and the
   predictions were bit-identical to the flavor design's on all four families.
-- The torch graph engine (2026-11-23) changes the resize by up to one gray level, see section 3.3.
+- The torch graph engine (2026-11-23) changes the resize by up to one gray level, see section 2.3.
   The ONNX networks are the same.
 - Torch bundles against the original models: SSD and Faster R-CNN IoU ≥ 0.999 and scores within
   1e-4, ResNet18 probabilities within 1e-5, RF-DETR scores within 2e-6 on the same device (1e-3
@@ -837,14 +663,14 @@ original image size, not `image_size`. Training only resizes with `--resize`, wh
 stores `image_size` (224 by default) either way. Our bundle follows the archive's `image_size`,
 which matches training only when training resized.
 
-### 8.2 `scripts/export_to_onnx.py`
+### 7.2 `scripts/export_to_onnx.py`
 
 - Input: a checkpoint or `--model-path` trainer archive, otherwise a pretrained `--model-name`.
 - Writes the bundle with the torch network to a temporary folder (the bundle helper), converts it
   with `ModelBundle.convert("onnx", options={"opset_version": ...})` and writes the ONNX bundle
   to the experiment model folder. The bundle is loaded once to fail here, not downstream.
 
-### 8.3 `scripts/export_onnx_to_openvino.py`
+### 7.3 `scripts/export_onnx_to_openvino.py`
 
 - Input bundle from the checkpoint dir when present, otherwise `--model-path`.
   `--precision fp32|fp16|int8` (default fp32), `--device` for the verification run.
@@ -882,7 +708,7 @@ NNCF post-training quantization of an FP32 ONNX or IR network.
   slower (163 vs 108 ms). INT8 latency has to be measured on the target hardware.
 - Not done yet: `nncf.quantize_with_accuracy_control`.
 
-### 8.4 `scripts/benchmark.py`
+### 7.4 `scripts/benchmark.py`
 
 - Any bundle from the checkpoint or `--model-path`, `--inference-engine` to run its components on
   another engine, `--device` passed to the engines. Dataset as in the other scripts; `--split-name`
@@ -910,31 +736,10 @@ NNCF post-training quantization of an FP32 ONNX or IR network.
 
 ---
 
-## 9. Implementation order
+## 8. Trainer package in Docker
 
-1. ✅ **Scaffold** `package-openvino` (pyproject, Dockerfile, `.hafniaignore`, `uv`), copied from
-   the trainer-object-detection conventions.
-2. ✅ **Core**: model info schema, bundle I/O, base class, registry, `GraphInferenceModel.from_path`.
-3. ✅ **torchvision → ONNX** (SSDLite320 network only, Faster R-CNN MobileNetV3 320 full model) on
-   ONNX Runtime + `scripts/export_to_onnx.py`. Parity against the original torch models: see 8.1.
-4. ✅ **OpenVINO** (loading both ONNX and IR bundles) + generic ONNX → OpenVINO conversion. See 8.3.
-5. ✅ **Quantization** (NNCF) with generic calibration. Test: mAP drop within a tolerance. See 8.3.
-6. ✅ **Benchmark script** with latency + accuracy. See 8.4 (and
-   `examples/example_compare_models.py` for the comparison).
-7. 🔶 **Platform run**: `hafnia trainer create-zip`, `hafnia runc build-local`,
-   `hafnia runc launch-local ...` for each script, then a real experiment. Local Docker run
-   done (2026-11-19, with the flavor design), the platform experiment is not: see "Trainer
-   package in Docker" below.
-8. ✅ RF-DETR as a second family and ResNet18 classification (2026-11-19). See 8.1.
-9. ✅ **Component graph redesign** (2026-11-20): models as graphs of components, torch as the
-   source format, generic conversion. Steps 2 to 6 and 8 were moved to it with unchanged results
-   (see "Parity" in 8.1).
-
----
-
-### Trainer package in Docker (step 7)
-
-Run on 2026-11-19 with the micro dataset mounted as the experiment dataset. **Not repeated after
+**Still open: an experiment on the Hafnia platform.** The local Docker run below was done on
+2026-11-19 with the micro dataset mounted as the experiment dataset. **It was not repeated after
 the redesign of 2026-11-20**: the scripts kept their arguments, and were run locally since.
 
 - `hafnia trainer create-zip .`: 817 KiB (scripts, `src/`, Dockerfile, lock file; tests, examples
@@ -957,7 +762,9 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
   (download.pytorch.org), and a way to pass the output bundle of one experiment as the
   checkpoint of the next.
 
-## 10. Risks and things to watch
+---
+
+## 9. Risks and things to watch
 
 - **Genericity is only proven by more model families.** Four families with different networks
   (single-stage, two-stage, transformer, classifier) now share all engine code. The next test is a
@@ -985,18 +792,21 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 
 ---
 
-## 11. Decisions
+## 10. Decisions
 
 **The `ModelBundle` interface (2026-11-24):**
 
 | Question | Decision |
 |---|---|
-| What is the user interface? | **Two classes.** `ModelBundle` (`from_path`, `from_zip`, `from_pretrained`, `write`, `write_zip`, `convert`) and `GraphInferenceModel.from_path`. They replace the functions `read_model_info`, `write_bundle`, `convert_bundle` and `inference_model_from_path`, so there is one way to do each thing. `load_graph` stays for graphs that are not image models. |
+| What is the user interface? | **Two classes.** `ModelBundle` (`from_path`, `from_pretrained`, `write`, `convert`) and `GraphInferenceModel.from_path`. They replace the functions `read_model_info`, `write_bundle`, `convert_bundle` and `inference_model_from_path`, so there is one way to do each thing. `load_graph` stays for graphs that are not image models. |
 | What is a `ModelBundle`? | **The description and the place of its files.** `ModelBundleInfo` was only the content of `model_info.json`. The place is not stored and not compared. The file is still named `model_info.json`, and Hafnia's `get_model_info()` returns the bundle. |
-| Folder or zip? | **Reading detects it** (`from_path`), with `from_zip` as the strict variant. **Writing is explicit**: `write` gives a folder, `write_zip` a zip. Functions with one output path (`convert`, the bundle helpers, `write_model`) still write a zip for a `.zip` path. |
+| Folder or zip? | **Reading detects it, writing follows the suffix** (2026-11-24, replacing `write_zip` and `from_zip` of the same day). `from_path` reads a folder or a zip. Every function that writes a bundle (`write`, `convert`, `from_pretrained`, the bundle helpers) takes one path: ending with `.zip` it writes a zip, otherwise a folder. Two rules for the same question (explicit methods next to the suffix) were one too many. |
 | How does a bundle become an inference model? | **`GraphInferenceModel.from_bundle(bundle)`**, with `from_path(path)` as the shorthand for a bundle on disk. A `ModelBundle` has no `load()`: that would be a second way, and the bundle definition would depend on the inference model. |
-| What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `write_zip`, `convert`, the bundle helpers of `model_exporters`, `TorchModelGraph.write` and `write_model`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
+| What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `convert`, `from_pretrained` and the bundle helpers of `model_exporters`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
 | How is a pretrained model written by name? | **`ModelBundle.from_pretrained(name, path_bundle)`**, with `list_pretrained()` for the names. It replaces `create_pretrained_bundle` and `pretrained_model_names` of `model_exporters.registry`. Each model name is an entry point (`hafnia.inference_model_pretrained_models`) that is imported only when used, so a model only needs the dependencies of its own framework, `inference_model_core` stays torch free and another package adds its own models. Names are flat (`resnet18`), and a name registered by two packages is an error. The path is required: a cache folder can be added later. |
+| Where are the load settings defined? | **Once, in `LoadSettings`** (2026-11-24). `from_path`, `from_bundle`, `load_graph` and `TorchModelGraph.load` each listed the same six arguments and passed them on. They now take `**load_settings: Unpack[LoadSettings]`: calls look the same, a type checker still checks the names and types, and an unknown setting is a `TypeError` at run time. Settings are keyword only. |
+| Does a loaded model write itself? | **No** (2026-11-24). `write_model`, `TorchModelGraph.write` and `Component.files()` are removed: nothing used them, and every network kept a second copy of its model files in memory for them. A loaded model always comes from a bundle on disk, so `model.get_model_info().write(path)` writes the same bundle. |
+| What if no engine takes the `device`? | **Loading fails** (2026-11-24). A name torch does not know (`GPU`, a typo like `cuda0`) used to run the torch components on the CPU without a word. That stays for graphs with a network on another engine, which checks the name itself, and is an error when every component runs on torch. |
 | Does an inference model convert? | **No.** Converting works on files, not on a loaded graph with its device and parameter overrides. Convert the bundle, then load it. |
 
 **Definitions and a torch graph engine (2026-11-23):**
@@ -1047,11 +857,11 @@ what became of them:
 
 | Review point | Decision | In the graph design |
 |---|---|---|
-| 1. Export contract | SSD models are **network only**; Faster R-CNN stays the **full model** | Unchanged (8.1) |
+| 1. Export contract | SSD models are **network only**; Faster R-CNN stays the **full model** | Unchanged (7.1) |
 | 2. Engine binding | The bundle's engine is a default that the caller can override | Per component: `inference_engine=` |
 | 3. Preprocessing | One implementation, also used for quantization calibration | Calibration runs the graph itself up to the component |
 | 4.1 Settings | Typed decoder settings with load-time overrides; engine options separate | `params=` per component, `engine_options` |
-| 4.2 Precision | FP16 compression only when asked, recorded in the model info | Unchanged (8.3) |
+| 4.2 Precision | FP16 compression only when asked, recorded in the model info | Unchanged (7.3) |
 | 4.3 Open strings | Not applied | Applied: `type` and engine names are plain strings |
 | 4.4 `framework` in the dispatch key | Not applied | Applied: nothing dispatches on `framework` |
 | 4.5 `uint8` input | `scale` defaults to `None` for `uint8` tensors | Unchanged (`image_to_tensor`) |
@@ -1063,22 +873,3 @@ Still open:
 
 - Does the Intel collaboration have target hardware or reference latency numbers (e.g. from
   OpenVINO `benchmark_app`) to compare against?
-
----
-
-## The flavor design (until 2026-11-20)
-
-For reference, what the redesign replaced (git history has the code, up to commit `e890172`):
-
-- `model_info.json` had a `runtime` section: one model file, declarative `preprocessing`
-  (resize, scale, mean/std, with steps marked as "in the graph"), a named `postprocessing.decoder`
-  with parameters, and `quantization_hints`.
-- A **flavor** was an `InferenceModelBase` subclass per (engine, framework, decoder), with a fixed
-  `preprocess → predict_raw → postprocess` pipeline. Postprocessing was duplicated per engine
-  and kept in line by cross-engine parity tests.
-- Exporters wrote ONNX bundles directly; `export_onnx_bundle_to_openvino` and `quantize_bundle`
-  converted them.
-
-What didn't hold up: every model family needed a flavor class per engine, and the three fixed
-stages with fixed signatures couldn't express a model that needs another order of steps or extra
-data between them.

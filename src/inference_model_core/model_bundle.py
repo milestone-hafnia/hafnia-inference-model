@@ -8,8 +8,8 @@ references, ...) with:
 
 A 'ModelBundle' also knows where its files are, once it is read from or written to a folder or a zip:
 
-    bundle = ModelBundle.from_path("model_onnx.zip")  # Folder or zip. 'from_zip' only takes a zip
-    bundle.write("model_onnx")  # As a folder, 'write_zip' as a zip
+    bundle = ModelBundle.from_path("model_onnx.zip")  # A folder or a zip
+    bundle.write("model_onnx")  # As a folder. A path ending with '.zip' writes a zip
     bundle_openvino = bundle.convert("openvino", "model_openvino.zip")
 
 A pretrained model is written as a bundle by name. The models are listed in the
@@ -40,7 +40,6 @@ from inference_model_core.bundle_io import (
     PathLike,
     check_relative_bundle_path,
     has_zip_suffix,
-    is_zip_bundle,
     missing_bundle_files,
     open_bundle_dir,
     read_bundle_file,
@@ -253,13 +252,6 @@ class ModelBundle(ModelInfo):
         return bundle
 
     @classmethod
-    def from_zip(cls, path_zip: PathLike) -> "ModelBundle":
-        """Read a bundle from a zip. Like 'from_path', but fails on anything that is not a zip file."""
-        if not is_zip_bundle(path_zip):
-            raise ValueError(f"'{path_zip}' is not a zip file. Use 'from_path' for a bundle folder.")
-        return cls.from_path(path_zip)
-
-    @classmethod
     def list_pretrained(cls) -> List[str]:
         """Names of the pretrained models 'from_pretrained' takes. Listing them imports nothing."""
         return sorted({entry_point.name for entry_point in entry_points(group=PRETRAINED_ENTRY_POINT_GROUP)})
@@ -311,33 +303,46 @@ class ModelBundle(ModelInfo):
     # --- writing -------------------------------------------------------------------------------------
     def write(
         self,
-        path_dir: PathLike,
+        path_bundle: PathLike,
         files: Optional[Mapping[str, FileSource]] = None,
         overwrite: bool = False,
     ) -> "ModelBundle":
-        """Write the bundle as a folder.
+        """Write the bundle as a zip when 'path_bundle' ends with '.zip', otherwise as a folder.
 
         Args:
-            path_dir: Folder to create.
+            path_bundle: Zip file or folder to create.
             files: Bundle-relative path -> file source (a path or the content), for exactly the files the
                 components list. By default the files of the bundle this one was read from.
-            overwrite: Replace an existing folder or file at 'path_dir'.
+            overwrite: Replace an existing folder or file at 'path_bundle'.
 
         Returns:
-            The written bundle: the same description, with 'path_dir' as its 'path'.
+            The written bundle: the same description, with 'path_bundle' as its 'path'.
         """
-        if has_zip_suffix(path_dir):
-            raise ValueError(f"'write' creates a folder, but '{path_dir}' ends with '.zip'. Use 'write_zip'.")
-        return self._write(path_dir, files, as_zip=False, overwrite=overwrite)
-
-    def write_zip(
-        self,
-        path_zip: PathLike,
-        files: Optional[Mapping[str, FileSource]] = None,
-        overwrite: bool = False,
-    ) -> "ModelBundle":
-        """Write the bundle as a zip file. See 'write' for the arguments."""
-        return self._write(path_zip, files, as_zip=True, overwrite=overwrite)
+        path_bundle = Path(path_bundle)
+        as_zip = has_zip_suffix(path_bundle)
+        if self._path is not None and path_bundle.resolve() == self._path.resolve():
+            raise ValueError(f"Can't write model bundle '{path_bundle}' onto itself: its files are read from there.")
+        model_info_json = self.model_dump_json(indent=4)
+        if files is not None:
+            expected_files = set(self.all_files())
+            provided_files = {check_relative_bundle_path(path) for path in files}
+            if provided_files != expected_files:
+                # A bundle never holds files its model info doesn't describe
+                raise ValueError(
+                    "Files must match the files listed in the model info. "
+                    f"Missing: {sorted(expected_files - provided_files)}, "
+                    f"not listed: {sorted(provided_files - expected_files)}."
+                )
+            write_bundle_files(path_bundle, model_info_json, files, as_zip=as_zip, overwrite=overwrite)
+        elif not self.all_files():
+            write_bundle_files(path_bundle, model_info_json, {}, as_zip=as_zip, overwrite=overwrite)
+        else:
+            with self.open_dir() as path_source_dir:  # Raises for a bundle in memory: it has no files to copy
+                sources: Dict[str, FileSource] = {path: path_source_dir / path for path in self.all_files()}
+                write_bundle_files(path_bundle, model_info_json, sources, as_zip=as_zip, overwrite=overwrite)
+        written = self.model_copy()
+        written._path = path_bundle
+        return written
 
     def convert(
         self,
@@ -383,45 +388,3 @@ class ModelBundle(ModelInfo):
                 "first, or read a bundle with 'ModelBundle.from_path'."
             )
         return self._path
-
-    def _write(
-        self, path_bundle: PathLike, files: Optional[Mapping[str, FileSource]], as_zip: bool, overwrite: bool
-    ) -> "ModelBundle":
-        path_bundle = Path(path_bundle)
-        if self._path is not None and path_bundle.resolve() == self._path.resolve():
-            raise ValueError(f"Can't write model bundle '{path_bundle}' onto itself: its files are read from there.")
-        model_info_json = self.model_dump_json(indent=4)
-        if files is not None:
-            expected_files = set(self.all_files())
-            provided_files = {check_relative_bundle_path(path) for path in files}
-            if provided_files != expected_files:
-                # A bundle never holds files its model info doesn't describe
-                raise ValueError(
-                    "Files must match the files listed in the model info. "
-                    f"Missing: {sorted(expected_files - provided_files)}, "
-                    f"not listed: {sorted(provided_files - expected_files)}."
-                )
-            write_bundle_files(path_bundle, model_info_json, files, as_zip=as_zip, overwrite=overwrite)
-        elif not self.all_files():
-            write_bundle_files(path_bundle, model_info_json, {}, as_zip=as_zip, overwrite=overwrite)
-        else:
-            with self.open_dir() as path_source_dir:  # Raises for a bundle in memory: it has no files to copy
-                sources: Dict[str, FileSource] = {path: path_source_dir / path for path in self.all_files()}
-                write_bundle_files(path_bundle, model_info_json, sources, as_zip=as_zip, overwrite=overwrite)
-        written = self.model_copy()
-        written._path = path_bundle
-        return written
-
-
-def write_by_suffix(
-    bundle: ModelBundle,
-    path_bundle: PathLike,
-    files: Optional[Mapping[str, FileSource]] = None,
-    overwrite: bool = False,
-) -> ModelBundle:
-    """Write a bundle as a zip when 'path_bundle' ends with '.zip', otherwise as a folder.
-
-    For functions that take one output path, e.g. 'ModelBundle.convert'.
-    """
-    writer = bundle.write_zip if has_zip_suffix(path_bundle) else bundle.write
-    return writer(path_bundle, files=files, overwrite=overwrite)

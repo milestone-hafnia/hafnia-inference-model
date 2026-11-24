@@ -8,7 +8,7 @@ import math
 import pytest
 from helpers import assert_detections_match, network_of
 
-from inference_model_core import GraphInferenceModel
+from inference_model_core import GraphInferenceModel, ModelBundle
 from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
@@ -54,9 +54,9 @@ def test_score_threshold_is_a_runtime_setting(ssd, images):
     assert n_strict > 0
 
 
-def test_write_model_round_trip(ssd, images, tmp_path):
+def test_bundle_copy_round_trip(ssd, images, tmp_path):
     model = GraphInferenceModel.from_path(ssd[2])
-    path_copy = model.write_model(tmp_path / "copy").path
+    path_copy = model.get_model_info().write(tmp_path / "copy").path
     assert sorted(p.name for p in (path_copy / "network").iterdir()) == ["model.onnx"]
     assert GraphInferenceModel.from_path(path_copy).predict(images[0]) == model.predict(images[0])
 
@@ -70,7 +70,7 @@ def test_engine_options(ssd):
 
 
 def test_model_info_must_describe_the_onnx_graph(ssd, tmp_path):
-    bundle = GraphInferenceModel.from_path(ssd[2]).write_model(tmp_path / "bundle")
+    bundle = ModelBundle.from_path(ssd[2]).write(tmp_path / "bundle")
     path_bundle = bundle.path
     network = bundle.graph.get_component("network")
     network.params["output_tensors"][0]["name"] = "detections"

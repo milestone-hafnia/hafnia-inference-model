@@ -22,7 +22,7 @@ from hafnia.log import sys_logger
 from inference_model_core.bundle_io import FileSource, PathLike
 from inference_model_core.definitions.network import ONNX_NETWORK_TYPE, OPENVINO_NETWORK_TYPE
 from inference_model_core.graph import ModelGraph, load_graph
-from inference_model_core.model_bundle import ComponentInfo, GraphInfo, ModelBundle, write_by_suffix
+from inference_model_core.model_bundle import ComponentInfo, GraphInfo, ModelBundle
 
 ENTRY_POINT_GROUP = "hafnia.inference_model_converters"
 
@@ -170,7 +170,7 @@ def convert_model_bundle(
 
         graph = GraphInfo(inputs=bundle.graph.inputs, outputs=bundle.graph.outputs, components=components)
         converted_bundle = bundle.model_copy(update={"graph": graph})
-        return write_by_suffix(converted_bundle, path_bundle, files=files, overwrite=overwrite)
+        return converted_bundle.write(path_bundle, files=files, overwrite=overwrite)
 
 
 def _conversion_chains(bundle: ModelBundle, target: str, path_source_bundle: PathLike) -> Dict[str, List[str]]:

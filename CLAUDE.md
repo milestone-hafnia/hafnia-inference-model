@@ -62,9 +62,12 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 ## Rules
 
-- The user interface is two classes: `ModelBundle` (`from_path`, `from_zip`, `from_pretrained`, `write`,
-  `write_zip`, `convert`) and `GraphInferenceModel` (`from_path`, `from_bundle`). Don't add module-level
-  functions that do the same.
+- The user interface is two classes, `ModelBundle` and `GraphInferenceModel`. New functionality is a method
+  on one of them, not a module-level function that does the same.
+- Every function that writes a bundle takes one path and returns the written `ModelBundle`. A path ending with
+  `.zip` is written as a zip, any other as a folder.
+- The load settings (`device`, `params`, `inference_engine`, ...) are defined once, in `LoadSettings`, and
+  passed on as `**load_settings`. Add a setting there, not as an argument of each function.
 - `inference_model_core` imports no torch, no graph engine and no inference engine. A test checks this.
 - The inference engine packages import `inference_model_core` and `inference_model_torch`, never each other.
 - A component type has one definition and one default implementation. An alternative implementation is
@@ -79,7 +82,9 @@ Each top-level package under `src/` is a separate concept that can later move to
 - The bundle format has a version (`MODEL_INFO_FORMAT_VERSION`). Bundles of another major version are
   rejected, so a change to the schema needs a new version.
 - A new model family needs a parity test against the original model.
-- Update `docs/design.md` when the design changes, and add the decision to its section 11.
+- Update `docs/design.md` when the design changes, and add the decision to its "Decisions" section.
+- Each fact has one home. How to use it: the README usage block and the docstrings. How it works and why:
+  `docs/design.md`. Don't copy signatures or file trees into the documents, as copies go stale.
 
 ## Commands
 

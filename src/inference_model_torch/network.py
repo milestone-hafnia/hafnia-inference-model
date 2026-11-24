@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Mapping, Optional, TypeVar
 import numpy as np
 import torch
 
-from inference_model_core.bundle_io import FileSource
 from inference_model_core.definition import ComponentDefinition
 from inference_model_core.definitions.network import NetworkDefinition
 from inference_model_core.model_bundle import NetworkParams
@@ -35,8 +34,6 @@ class FileNetwork(Component[N]):
         context = self.context
         if not context.info.files or context.path_dir is None:
             raise ValueError(f"Network component '{context.info.name}' needs its model files to be loaded.")
-        # Kept for writing the bundle again, as engines can't serialize a loaded model back
-        self._model_files = {path: (context.path_dir / path).read_bytes() for path in context.info.files}
         # Loaded from the file path so companion files next to the entry file are found ('model.bin', external data)
         self.load_network(context.path_dir / context.info.files[0])
 
@@ -56,9 +53,6 @@ class FileNetwork(Component[N]):
     def device(self) -> torch.device:
         """The engine gets its inputs from host memory, whatever device it computes on."""
         return torch.device("cpu")
-
-    def files(self) -> Dict[str, FileSource]:
-        return dict(self._model_files)
 
     @property
     def output_names(self) -> List[str]:
@@ -111,11 +105,6 @@ class TorchNetwork(Component[D]):
         if not context.info.files or context.path_dir is None:
             raise ValueError(f"Torch component '{context.info.name}' needs its weights file to be loaded.")
         self.model = self.build_model(context.path_dir / context.info.files[0], self.device)
-        # Kept for writing the bundle again
-        self._weight_files = {path: (context.path_dir / path).read_bytes() for path in context.info.files}
-
-    def files(self) -> Dict[str, FileSource]:
-        return dict(self._weight_files)
 
     @abstractmethod
     def build_model(self, path_weights: Path, device: torch.device) -> Any:

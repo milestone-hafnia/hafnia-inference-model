@@ -6,13 +6,13 @@ families, engines and formats: what a model does is described by the components 
 engine runs them.
 """
 
-from typing import Any, List, Mapping, Optional
+from typing import List, Optional, Unpack
 
 from hafnia.dataset.benchmark.inference_model import ImageType, InferenceModel
 from hafnia.dataset.primitives import Primitive
 
 from inference_model_core.bundle_io import PathLike
-from inference_model_core.graph import DEFAULT_GRAPH_ENGINE, ModelGraph, load_graph
+from inference_model_core.graph import LoadSettings, ModelGraph, load_graph
 from inference_model_core.model_bundle import ModelBundle
 
 INPUT_KEY = "image"
@@ -30,61 +30,22 @@ class GraphInferenceModel(InferenceModel):
         self.graph = graph
 
     @classmethod
-    def from_path(
-        cls,
-        path_bundle: PathLike,
-        inference_engine: Optional[str] = None,
-        params: Optional[Mapping[str, Any]] = None,
-        device: str = "CPU",
-        num_threads: Optional[int] = None,
-        engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
-        graph_engine: str = DEFAULT_GRAPH_ENGINE,
-    ) -> "GraphInferenceModel":
+    def from_path(cls, path_bundle: PathLike, **load_settings: Unpack[LoadSettings]) -> "GraphInferenceModel":
         """Load the model bundle in a folder or zip as an inference model. See 'from_bundle' for the arguments."""
-        return cls.from_bundle(
-            ModelBundle.from_path(path_bundle),
-            inference_engine=inference_engine,
-            params=params,
-            device=device,
-            num_threads=num_threads,
-            engine_options=engine_options,
-            graph_engine=graph_engine,
-        )
+        return cls.from_bundle(ModelBundle.from_path(path_bundle), **load_settings)
 
     @classmethod
-    def from_bundle(
-        cls,
-        bundle: ModelBundle,
-        inference_engine: Optional[str] = None,
-        params: Optional[Mapping[str, Any]] = None,
-        device: str = "CPU",
-        num_threads: Optional[int] = None,
-        engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
-        graph_engine: str = DEFAULT_GRAPH_ENGINE,
-    ) -> "GraphInferenceModel":
+    def from_bundle(cls, bundle: ModelBundle, **load_settings: Unpack[LoadSettings]) -> "GraphInferenceModel":
         """Load a model bundle as an inference model.
 
         Args:
             bundle: A bundle that was read or written, e.g. the result of 'ModelBundle.convert'. Its files are
                 read from 'bundle.path', so a bundle that is only in memory has to be written first.
-            inference_engine: Inference engine for the components that have an implementation on it. Defaults to
-                each component's default implementation. E.g. 'openvino' runs an ONNX bundle on OpenVINO.
-            params: Overrides of component parameters, e.g. '{"score_threshold": 0.5}' (see 'load_graph').
-            device: Device for the inference engines, e.g. 'CPU'.
-            num_threads: Threads per inference engine. 'None' uses the engine defaults.
-            engine_options: Inference engine name -> settings only that engine knows.
-            graph_engine: Graph engine that runs the components.
+            **load_settings: How the bundle is loaded: 'inference_engine', 'params', 'device', 'num_threads',
+                'engine_options' and 'graph_engine', e.g. 'params={"score_threshold": 0.5}, device="CUDA"'. See
+                'LoadSettings' for each of them.
         """
-        graph = load_graph(
-            bundle,
-            graph_engine=graph_engine,
-            inference_engine=inference_engine,
-            params=params,
-            device=device,
-            num_threads=num_threads,
-            engine_options=engine_options,
-        )
-        return cls(graph)
+        return cls(load_graph(bundle, **load_settings))
 
     def predict(self, image: ImageType, sample_dict: Optional[dict] = None) -> List[Primitive]:
         return self.graph.run({INPUT_KEY: image}, outputs=[OUTPUT_KEY])[OUTPUT_KEY]
@@ -102,8 +63,3 @@ class GraphInferenceModel(InferenceModel):
 
     def get_model_info(self) -> ModelBundle:
         return self.graph.bundle
-
-    def write_model(self, path_bundle: PathLike, overwrite: bool = False) -> ModelBundle:
-        """Write the model as a bundle and return the written bundle. A path ending with '.zip' creates a zip,
-        otherwise a folder."""
-        return self.graph.write(path_bundle, overwrite=overwrite)

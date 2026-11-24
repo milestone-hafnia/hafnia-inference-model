@@ -18,7 +18,6 @@ from hafnia.dataset.primitives import Bbox
 from inference_model_core import ComponentDefinition, ConversionInfo, GraphInfo, ModelBundle, Port
 from inference_model_core.bundle_io import FileSource
 from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
-from inference_model_core.model_bundle import write_by_suffix
 from inference_model_torch import Component
 
 DUMMY_TYPE = "dummy_network"
@@ -52,9 +51,6 @@ class DummyNetwork(Component[DummyNetworkDefinition]):
         assert self.context.path_dir is not None
         self.detections: dict = json.loads((self.context.path_dir / self.info.files[0]).read_text())
         self.input_shapes: List[Tuple[int, ...]] = []  # Shapes of 'images' in the calls so far
-
-    def files(self) -> Dict[str, Any]:
-        return {self.info.files[0]: json.dumps(self.detections).encode()}
 
     @property
     def max_batch_size(self) -> Optional[int]:
@@ -125,7 +121,7 @@ def make_bundle(
 
 def write_dummy_bundle(path_bundle: Path, **bundle_kwargs: Any) -> Path:
     files: Dict[str, FileSource] = {DUMMY_NETWORK_FILE: json.dumps(DUMMY_DETECTIONS).encode()}
-    write_by_suffix(make_bundle(**bundle_kwargs), path_bundle, files=files)
+    make_bundle(**bundle_kwargs).write(path_bundle, files=files)
     return path_bundle
 
 

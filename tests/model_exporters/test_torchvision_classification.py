@@ -62,6 +62,12 @@ def test_from_pretrained(resnet18_torch, images, tmp_path):
     assert GraphInferenceModel.from_bundle(bundle).predict(images[0]) == expected
 
 
+def test_torch_bundle_needs_a_torch_device(resnet18_torch):
+    """A device name of another engine would silently run a torch network on the CPU."""
+    with pytest.raises(ValueError, match="Unsupported device 'GPU'"):
+        GraphInferenceModel.from_path(resnet18_torch[2], device="GPU")
+
+
 def test_torch_bundle_matches_torch(resnet18_torch, images):
     """The torch network is rebuilt from the architecture name and the stored weights."""
     torch_model, _, path_bundle = resnet18_torch

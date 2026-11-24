@@ -11,7 +11,7 @@ import pytest
 from helpers import DUMMY_DETECTIONS, DUMMY_NETWORK_FILE, make_bundle
 
 from inference_model_core import ModelBundle
-from inference_model_core.model_bundle import PRETRAINED_ENTRY_POINT_GROUP, write_by_suffix
+from inference_model_core.model_bundle import PRETRAINED_ENTRY_POINT_GROUP
 
 CREATE_DUMMY = f"{__name__}:create_dummy_bundle"
 
@@ -20,7 +20,7 @@ def create_dummy_bundle(name: str, path_bundle: Path, overwrite: bool = False) -
     """A function as it is registered for a pretrained model."""
     bundle = make_bundle().model_copy(update={"name": name})
     files = {DUMMY_NETWORK_FILE: json.dumps(DUMMY_DETECTIONS).encode()}
-    return write_by_suffix(bundle, path_bundle, files=files, overwrite=overwrite)
+    return bundle.write(path_bundle, files=files, overwrite=overwrite)
 
 
 def create_path_only(name: str, path_bundle: Path, overwrite: bool = False) -> Optional[Path]:

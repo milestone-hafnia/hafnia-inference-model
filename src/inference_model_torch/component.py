@@ -33,7 +33,6 @@ from typing import Any, Callable, ClassVar, Dict, Generic, List, Mapping, Option
 import numpy as np
 import torch
 
-from inference_model_core.bundle_io import FileSource
 from inference_model_core.definition import ComponentDefinition
 from inference_model_core.model_bundle import ComponentInfo, ModelBundle
 
@@ -149,26 +148,29 @@ class Component(ABC, Generic[D]):
         """Prepare for running, with 'self.params' and 'self.context': read the component's files, look up a
         task. Called once, when the graph is loaded."""
 
-    def files(self) -> Dict[str, FileSource]:
-        """The component's bundle files (path relative to the bundle -> content), for writing the bundle."""
-        return {}
-
     @property
     def max_batch_size(self) -> Optional[int]:
         """Largest batch a batched component takes in one call. 'None' for no limit."""
         return None
 
 
+def is_torch_device(device: str) -> bool:
+    """Whether torch knows the device name: 'CPU', 'CUDA' or a torch device name such as 'cuda:1'."""
+    try:
+        torch.device(device.lower())
+    except RuntimeError:
+        return False
+    return True
+
+
 def torch_device(device: str) -> torch.device:
     """Torch device for a device name of the load options.
 
     'CPU', 'CUDA' and torch device names (e.g. 'cuda:1') are used as they are. Other names belong to another
-    inference engine (e.g. OpenVINO's 'GPU', 'NPU' or 'AUTO'): the components written in torch then run on the CPU.
+    inference engine (e.g. OpenVINO's 'GPU', 'NPU' or 'AUTO'): the components written in torch then run on the
+    CPU. A graph without such an engine does not load with such a name (see 'TorchModelGraph.load').
     """
-    try:
-        return torch.device(device.lower())
-    except RuntimeError:
-        return torch.device("cpu")
+    return torch.device(device.lower()) if is_torch_device(device) else torch.device("cpu")
 
 
 def to_numpy(tensor: torch.Tensor) -> np.ndarray:
