@@ -18,6 +18,23 @@ def test_graph_inference_model_from_path(tmp_path, dummy_network):
     assert model.get_model_info() == make_bundle()
 
 
+def test_graph_inference_model_from_bundle(tmp_path, dummy_network):
+    path_bundle = write_dummy_bundle(tmp_path / "model.zip")
+    bundle = ModelBundle.from_path(path_bundle)
+    model = GraphInferenceModel.from_bundle(bundle, params={"score_threshold": 0.5})
+
+    assert model.get_model_info() is bundle  # The bundle is not read again
+    image = random_image(32, 32)
+    assert model.predict(image) == GraphInferenceModel.from_path(path_bundle, params={"score_threshold": 0.5}).predict(
+        image
+    )
+
+
+def test_from_bundle_needs_the_files_on_disk(dummy_network):
+    with pytest.raises(ValueError, match="is only in memory and has no files on disk"):
+        GraphInferenceModel.from_bundle(make_bundle())
+
+
 def test_predict_returns_primitives(tmp_path, dummy_network):
     model = GraphInferenceModel.from_path(write_dummy_bundle(tmp_path / "model.zip"))
     predictions = model.predict(random_image(32, 32))

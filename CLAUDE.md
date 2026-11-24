@@ -63,7 +63,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 ## Rules
 
 - The user interface is two classes: `ModelBundle` (`from_path`, `from_zip`, `write`, `write_zip`, `convert`)
-  and `GraphInferenceModel.from_path`. Don't add module-level functions that do the same.
+  and `GraphInferenceModel` (`from_path`, `from_bundle`). Don't add module-level functions that do the same.
 - `inference_model_core` imports no torch, no graph engine and no inference engine. A test checks this.
 - The inference engine packages import `inference_model_core` and `inference_model_torch`, never each other.
 - A component type has one definition and one default implementation. An alternative implementation is

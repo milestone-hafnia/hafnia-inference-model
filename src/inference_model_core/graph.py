@@ -12,7 +12,7 @@ listed in the 'hafnia.inference_model_graph_engines' entry point group and impor
 
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Union
 
 from inference_model_core.bundle_io import PathLike
 from inference_model_core.model_bundle import ModelBundle
@@ -52,7 +52,7 @@ def list_graph_engines() -> List[str]:
 
 
 def load_graph(
-    path_bundle: PathLike,
+    bundle: Union[ModelBundle, PathLike],
     graph_engine: str = DEFAULT_GRAPH_ENGINE,
     inference_engine: Optional[str] = None,
     params: Optional[Mapping[str, Any]] = None,
@@ -61,10 +61,10 @@ def load_graph(
     engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
     outputs: Optional[Sequence[str]] = None,
 ) -> ModelGraph:
-    """Load the model graph of a bundle (zip or directory).
+    """Load the model graph of a bundle.
 
     Args:
-        path_bundle: Zip or directory bundle.
+        bundle: A model bundle that was read or written, or the path of a bundle folder or zip.
         graph_engine: Graph engine that runs the components.
         inference_engine: Inference engine for every component that has an implementation on it, e.g. 'openvino'
             runs the ONNX networks of a bundle on OpenVINO. Other components run on their default implementation.
@@ -86,8 +86,10 @@ def load_graph(
         raise ImportError(
             f"Graph engine '{graph_engine}' ('{matches[0].value}') can not be imported: {e}. Install its dependencies."
         ) from e
+    if not isinstance(bundle, ModelBundle):
+        bundle = ModelBundle.from_path(bundle)
     return graph_class.load(
-        path_bundle,
+        bundle,
         inference_engine=inference_engine,
         params=params,
         device=device,

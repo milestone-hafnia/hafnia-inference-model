@@ -41,10 +41,33 @@ class GraphInferenceModel(InferenceModel):
         engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
         graph_engine: str = DEFAULT_GRAPH_ENGINE,
     ) -> "GraphInferenceModel":
+        """Load the model bundle in a folder or zip as an inference model. See 'from_bundle' for the arguments."""
+        return cls.from_bundle(
+            ModelBundle.from_path(path_bundle),
+            inference_engine=inference_engine,
+            params=params,
+            device=device,
+            num_threads=num_threads,
+            engine_options=engine_options,
+            graph_engine=graph_engine,
+        )
+
+    @classmethod
+    def from_bundle(
+        cls,
+        bundle: ModelBundle,
+        inference_engine: Optional[str] = None,
+        params: Optional[Mapping[str, Any]] = None,
+        device: str = "CPU",
+        num_threads: Optional[int] = None,
+        engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        graph_engine: str = DEFAULT_GRAPH_ENGINE,
+    ) -> "GraphInferenceModel":
         """Load a model bundle as an inference model.
 
         Args:
-            path_bundle: Bundle folder or zip.
+            bundle: A bundle that was read or written, e.g. the result of 'ModelBundle.convert'. Its files are
+                read from 'bundle.path', so a bundle that is only in memory has to be written first.
             inference_engine: Inference engine for the components that have an implementation on it. Defaults to
                 each component's default implementation. E.g. 'openvino' runs an ONNX bundle on OpenVINO.
             params: Overrides of component parameters, e.g. '{"score_threshold": 0.5}' (see 'load_graph').
@@ -54,7 +77,7 @@ class GraphInferenceModel(InferenceModel):
             graph_engine: Graph engine that runs the components.
         """
         graph = load_graph(
-            path_bundle,
+            bundle,
             graph_engine=graph_engine,
             inference_engine=inference_engine,
             params=params,

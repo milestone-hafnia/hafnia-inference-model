@@ -306,7 +306,7 @@ dataset, one image per call, same ONNX or torch network in both):
   the GPU than they were in NumPy on the CPU. Keeping tensors on the GPU pays off for larger images
   and batches, which were not measured.
 
-### 3.5 Loading: `GraphInferenceModel.from_path()`
+### 3.5 Loading: `GraphInferenceModel.from_path()` and `from_bundle()`
 
 ```python
 model = GraphInferenceModel.from_path("ssdlite320_onnx.zip")  # default implementations
@@ -317,7 +317,16 @@ primitives = model.predict(image)
 
 There is **one** inference model class for all bundles, `GraphInferenceModel`. It feeds the image
 as graph input `image` and returns the graph output `predictions`. `from_path` takes a bundle
-folder or zip.
+folder or zip. `from_bundle` takes a `ModelBundle` that was read or written, e.g. the result of
+`convert`, and does not read the model info again:
+
+```python
+model = GraphInferenceModel.from_bundle(bundle.convert("openvino", "model_openvino.zip"))
+```
+
+`from_path` is `from_bundle(ModelBundle.from_path(path))`, and `load_graph` takes either too. A copy
+of a bundle with an edited description keeps the place of the original files, so it loads the
+edited description with those files.
 
 Load-time settings, none of them stored in the bundle:
 
@@ -413,7 +422,7 @@ class ModelGraph(Protocol):  # graph.py: what every graph engine provides
 
 
 def load_graph(
-    path_bundle,
+    bundle,  # a ModelBundle or the path of a bundle folder or zip
     graph_engine="torch",
     inference_engine=None,
     params=None,
@@ -436,6 +445,8 @@ class GraphInferenceModel(hafnia.InferenceModel):  # inference_model.py
         engine_options=None,
         graph_engine="torch",
     ) -> "GraphInferenceModel": ...
+    @classmethod
+    def from_bundle(cls, bundle, **load_settings) -> "GraphInferenceModel": ...  # the same settings as 'from_path'
     def predict(self, image, sample_dict=None) -> List[Primitive]: ...
     def predict_batch(self, images, sample_dicts=None) -> List[List[Primitive]]: ...
     def get_model_info(self) -> ModelBundle: ...
@@ -959,6 +970,7 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 | What is the user interface? | **Two classes.** `ModelBundle` (`from_path`, `from_zip`, `write`, `write_zip`, `convert`) and `GraphInferenceModel.from_path`. They replace the functions `read_model_info`, `write_bundle`, `convert_bundle` and `inference_model_from_path`, so there is one way to do each thing. `load_graph` stays for graphs that are not image models. |
 | What is a `ModelBundle`? | **The description and the place of its files.** `ModelBundleInfo` was only the content of `model_info.json`. The place is not stored and not compared. The file is still named `model_info.json`, and Hafnia's `get_model_info()` returns the bundle. |
 | Folder or zip? | **Reading detects it** (`from_path`), with `from_zip` as the strict variant. **Writing is explicit**: `write` gives a folder, `write_zip` a zip. Functions with one output path (`convert`, the bundle helpers, `write_model`) still write a zip for a `.zip` path. |
+| How does a bundle become an inference model? | **`GraphInferenceModel.from_bundle(bundle)`**, with `from_path(path)` as the shorthand for a bundle on disk. A `ModelBundle` has no `load()`: that would be a second way, and the bundle definition would depend on the inference model. |
 | Does an inference model convert? | **No.** Converting works on files, not on a loaded graph with its device and parameter overrides. Convert the bundle, then load it. |
 
 **Definitions and a torch graph engine (2026-11-23):**

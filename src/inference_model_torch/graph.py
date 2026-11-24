@@ -37,7 +37,7 @@ class TorchModelGraph:
     @classmethod
     def load(
         cls,
-        path_bundle: PathLike,
+        bundle: ModelBundle,
         inference_engine: Optional[str] = None,
         params: Optional[Mapping[str, Any]] = None,
         device: str = "CPU",
@@ -45,7 +45,7 @@ class TorchModelGraph:
         engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
         outputs: Optional[Sequence[str]] = None,
     ) -> "TorchModelGraph":
-        """Load a model bundle (folder or zip). See 'inference_model_core.load_graph' for the arguments.
+        """Load a model bundle that has its files on disk. See 'inference_model_core.load_graph' for the arguments.
 
         'device' is 'CPU', 'CUDA' or a torch device name for the components written in torch. Device names of
         another inference engine (e.g. OpenVINO's 'GPU') only apply to that engine: torch then uses the CPU.
@@ -54,7 +54,6 @@ class TorchModelGraph:
         options = LoadOptions(device=device, num_threads=num_threads, engine_options=engine_options or {})
         if num_threads is not None:
             torch.set_num_threads(num_threads)
-        bundle = ModelBundle.from_path(path_bundle)
         with bundle.open_dir() as path_dir:
             graph = bundle.graph
             infos = graph.components_for(list(outputs)) if outputs is not None else graph.components
@@ -62,7 +61,7 @@ class TorchModelGraph:
             engines = {component_class.engine for component_class in classes.values()}
             if inference_engine is not None and inference_engine not in engines:
                 raise ValueError(
-                    f"No component of '{path_bundle}' runs on inference engine '{inference_engine}'. Component "
+                    f"No component of '{bundle.path}' runs on inference engine '{inference_engine}'. Component "
                     f"types: {sorted({info.type for info in infos})}."
                 )
             unknown_engines = sorted(set(options.engine_options) - engines)

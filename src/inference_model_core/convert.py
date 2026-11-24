@@ -152,7 +152,7 @@ def convert_model_bundle(
                     path_output_dir=path_output_dir,
                     target=step_target,
                     options={**stored_options, **(options or {} if step_target == target else {})},
-                    calibration=_calibration_feed(path_source_bundle, component, calibration_inputs),
+                    calibration=_calibration_feed(bundle, component, calibration_inputs),
                     n_calibration_samples=len(calibration_inputs or []),
                 )
                 converted = get_converter(component.type, step_target)(request)
@@ -228,7 +228,7 @@ def _find_chain(component: ComponentInfo, target: str) -> Optional[List[str]]:
 
 
 def _calibration_feed(
-    path_source_bundle: PathLike,
+    bundle: ModelBundle,
     component: ComponentInfo,
     calibration_inputs: Optional[Sequence[Mapping[str, Any]]],
 ) -> Optional[CalibrationFeed]:
@@ -239,7 +239,7 @@ def _calibration_feed(
 
     def feed() -> Iterator[Dict[str, Any]]:
         if not graphs:
-            graphs.append(load_graph(path_source_bundle, outputs=input_keys))
+            graphs.append(load_graph(bundle, outputs=input_keys))
         for sample_inputs in calibration_inputs:
             values = graphs[0].run(sample_inputs, outputs=input_keys)
             # A batched component gets its inputs with a batch axis, here a batch of one sample

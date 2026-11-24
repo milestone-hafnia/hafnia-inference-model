@@ -33,8 +33,9 @@ flowchart LR
 - **Only the bundle crosses** to this package: no Python code and no dependencies. Loading a bundle never
   runs code from it.
 - **This package is fixed code**, the same for every model. It converts a bundle to OpenVINO and loads any
-  bundle as an `InferenceModel` with `GraphInferenceModel.from_path()`. An `InferenceModel` takes an image and
-  returns Hafnia primitives, so predicting, visualizing and benchmarking are shared by all models.
+  bundle as an `InferenceModel` with `GraphInferenceModel.from_path()` or `from_bundle()`. An `InferenceModel`
+  takes an image and returns Hafnia primitives, so predicting, visualizing and benchmarking are shared by all
+  models.
 
 Where the code is today: the export step for the two supported frameworks (torchvision and RF-DETR) is the
 `model_exporters` package in this repository. It is the only part that depends on the frameworks, and in the
@@ -213,7 +214,8 @@ bundle_onnx.write("model_onnx_dir")  # As a folder
 bundle_onnx.write_zip("model_onnx_copy.zip")  # As a zip
 
 # Run any bundle: the graph in model_info.json says how
-model = GraphInferenceModel.from_path("model_onnx.zip")
+model = GraphInferenceModel.from_bundle(bundle_onnx)  # A bundle you already hold
+model = GraphInferenceModel.from_path("model_onnx.zip")  # Or a bundle folder or zip
 model = GraphInferenceModel.from_path(
     "model_onnx.zip",
     inference_engine="openvino",  # Optional: run the ONNX network on OpenVINO
