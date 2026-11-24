@@ -11,7 +11,6 @@ import pytest
 from helpers import assert_detections_match, network_of
 
 from inference_model_core import GraphInferenceModel, load_graph
-from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
@@ -109,10 +108,8 @@ def test_engine_options(ssd_ir, images):
 
 def test_hafnia_benchmark_on_micro_coco(ssd, ssd_ir, micro_coco):
     """Same metrics on both engines through hafnia's benchmark."""
-    onnxruntime_metrics, _ = run_benchmark(
-        dataset=micro_coco, model=GraphInferenceModel.from_path(ssd[2]), batch_size=2
-    )
-    openvino_metrics, _ = run_benchmark(dataset=micro_coco, model=GraphInferenceModel.from_path(ssd_ir), batch_size=2)
+    onnxruntime_metrics, _ = GraphInferenceModel.from_path(ssd[2]).benchmark(micro_coco, batch_size=2)
+    openvino_metrics, _ = GraphInferenceModel.from_path(ssd_ir).benchmark(micro_coco, batch_size=2)
 
     assert openvino_metrics.keys() == onnxruntime_metrics.keys()
     assert all(math.isfinite(value) for value in openvino_metrics.values())

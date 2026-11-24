@@ -32,7 +32,6 @@ from PIL import Image
 from rich import print as rprint
 
 from inference_model_core import GraphInferenceModel, ModelBundle
-from package_openvino.metrics import run_benchmark
 
 t0 = time.time()
 ##### PREPARE EXAMPLE #####
@@ -88,7 +87,7 @@ rprint(f"5) Visualization saved to '{path_visualization}'")
 # the ground truth. Load the model with the bundle's default (low) score threshold, as metrics need all
 # detections, not only the confident ones. A bundle on disk loads the same way from its path.
 model_benchmark = GraphInferenceModel.from_path(path_openvino)
-metrics, dataset_predictions = run_benchmark(dataset=dataset, model=model_benchmark)
+metrics, dataset_predictions = model_benchmark.benchmark(dataset)
 rprint(f"6) Benchmark metrics: {metrics}")
 
 t1 = time.time()

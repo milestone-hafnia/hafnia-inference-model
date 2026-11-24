@@ -38,7 +38,6 @@ from rich import print as rprint
 from rich.table import Table
 
 from inference_model_core import GraphInferenceModel, ModelBundle
-from package_openvino.metrics import run_benchmark
 
 MODELS = {
     "SSDLite320": "ssdlite320_mobilenet_v3_large",
@@ -112,7 +111,7 @@ for i_model_family, (model_label, model_name) in enumerate(MODELS.items()):
         # Accuracy with the bundle's default (low) score threshold, as metrics need all detections
         model = GraphInferenceModel.from_path(path_bundle, inference_engine=engine)
         with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
-            metrics, _ = run_benchmark(dataset=dataset, model=model)
+            metrics, _ = model.benchmark(dataset)
 
         latency_ms = median_latency_ms(path_bundle, engine, images)
         mAP = metrics["object_detection/mAP"]

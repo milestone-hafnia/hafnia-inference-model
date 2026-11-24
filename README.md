@@ -1,48 +1,15 @@
-# package-openvino
+# hafnia-inference-model
 
-A Hafnia trainer package for **generic model export and inference**. It does no training. Instead it
-converts models to OpenVINO and runs them through one shared `InferenceModel` interface that always
+**Model bundles**: a model stored as a zip with its files and a `model_info.json` that describes it as a
+graph of components. This library writes bundles from pretrained models and trainer archives, converts them
+(torch → ONNX → OpenVINO IR → INT8), and runs any bundle through one `InferenceModel` interface that always
 returns Hafnia primitives, so models can be visualized, benchmarked and served the same way.
 
-## Concept
+The Hafnia trainer package [package-openvino](../README.md) uses it, and explains where bundles come from and
+why only the bundle crosses from a user's trainer package. See [docs/design.md](docs/design.md) for the design
+and decisions.
 
-### Two environments, one model bundle
-
-```mermaid
-flowchart LR
-    subgraph user_env["User's trainer package: own code and dependencies"]
-        frameworks["CV frameworks<br/>torchvision, RF-DETR<br/>later: Ultralytics, Darknet, D-FINE,<br/>mmdetection, custom"]
-        bundle_user["Model bundle (zip)"]
-        frameworks -->|export| bundle_user
-    end
-    subgraph fixed_env["package-openvino: fixed code, users can't change it"]
-        bundle["Model bundle (zip)"]
-        converter["OpenVINO converter<br/>FP32, FP16, INT8"]
-        bundle_openvino["Model bundle (OpenVINO IR)"]
-        model["InferenceModel<br/>image in, Hafnia primitives out"]
-        apps["Applications<br/>predict, visualize,<br/>benchmark latency and accuracy,<br/>later: serve"]
-        bundle -->|"from_path()"| model
-        bundle --> converter --> bundle_openvino -->|"from_path()"| model
-        model --> apps
-    end
-    bundle_user ==>|"zip only: no Python code, no dependencies"| bundle
-```
-
-- **A user's trainer package** trains a model with a CV framework of the user's choice. It holds the user's
-  code and dependencies, and exports the model as a **model bundle**.
-- **Only the bundle crosses** to this package: no Python code and no dependencies. Loading a bundle never
-  runs code from it.
-- **This package is fixed code**, the same for every model. It converts a bundle to OpenVINO and loads any
-  bundle as an `InferenceModel` with `GraphInferenceModel.from_path()` or `from_bundle()`. An `InferenceModel`
-  takes an image and returns Hafnia primitives, so predicting, visualizing and benchmarking are shared by all
-  models.
-
-Where the code is today: the export step for the two supported frameworks (torchvision and RF-DETR) is the
-`model_exporters` package in this repository. It is the only part that depends on the frameworks, and in the
-concept it belongs on the trainer package side. A bundle with a torch network needs `model_exporters` to
-rebuild the network, so the bundles that cross the line are ONNX or OpenVINO bundles.
-
-### Inside a bundle: definition and implementation
+## Inside a bundle: definition and implementation
 
 A bundle is a zip with the model files and a `model_info.json` that describes the model as a **graph of
 components**. Each component reads and writes named items of one data dictionary. The bundle only
@@ -76,7 +43,10 @@ Converting a bundle (torch → ONNX → OpenVINO → INT8) replaces the network 
 family is a new graph built from existing components. Running a graph needs torch, whatever format the network
 has.
 
-See [docs/design.md](docs/design.md) for the design and decisions.
+The export step for the two supported frameworks (torchvision and RF-DETR) is the `model_exporters` package. It
+is the only part that depends on the frameworks, and in the concept it belongs on the trainer package side. A
+bundle with a torch network needs `model_exporters` to rebuild the network, so the bundles that cross to
+package-openvino are ONNX or OpenVINO bundles.
 
 ## Supported models
 
@@ -95,20 +65,11 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 | Package | Purpose |
 |---|---|
-| `inference_model_core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), and the interface of a loaded graph (`GraphInferenceModel`, `load_graph`). No implementations, torch free. |
+| `inference_model_core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), and the interface of a loaded graph (`GraphInferenceModel` with its accuracy and latency benchmarks, `load_graph`). No implementations, torch free. |
 | `inference_model_torch` | The torch graph engine: `TorchModelGraph` (the executor), the implementations of the standard definitions in torch, the base classes of networks, and the converter torch → ONNX |
 | `inference_model_onnxruntime` | Runs `onnx_network` components on ONNX Runtime, inside the torch graph engine |
 | `inference_model_openvino` | Runs `openvino_network` (and on request `onnx_network`) components on OpenVINO, inside the torch graph engine. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
 | `model_exporters` | Model families: the definitions and torch implementations of the networks of torchvision SSD, Faster R-CNN and ResNet18 and of RF-DETR, and the functions that write their bundles from pretrained models and trainer archives |
-| `package_openvino` | Trainer glue: checkpoint and dataset loading, latency per component, metrics, class mappings |
-
-## Scripts
-
-| Script | Purpose |
-|---|---|
-| `scripts/export_to_onnx.py` | Export a trainer archive (checkpoint or `--model-path`) or a pretrained model (`--model-name`) to an ONNX bundle in the experiment model folder |
-| `scripts/export_onnx_to_openvino.py` | Convert an ONNX bundle (checkpoint or `--model-path`) to an OpenVINO IR bundle: FP32, FP16 or INT8 (calibrated on a Hafnia dataset) |
-| `scripts/benchmark.py` | Accuracy (Hafnia metrics, optional class mappings) and latency per component (e.g. resize, network, NMS) of any bundle on any engine and device |
 
 ## Examples
 
@@ -138,60 +99,21 @@ uv run python tests/micro_datasets.py          # Create missing micro datasets
 uv run python tests/micro_datasets.py --force  # Recreate all of them
 ```
 
-## Trainer package
-
-```bash
-hafnia trainer create-zip .           # -> trainer.zip (see .hafniaignore)
-hafnia runc build-local trainer.zip   # -> Docker image, its tag in state.json
-```
-
-`hafnia runc launch-local` mounts only the dataset and needs the NVIDIA container runtime. To test a script
-that takes an input bundle, run the image like the platform does, with the checkpoint, model and output
-folders mounted (here the bundle from `.data/runs/1/model` is the checkpoint of run 2):
-
-```bash
-IMAGE=$(python -c "import json; print(json.load(open('state.json'))['image_tag'])")
-mkdir -p .data/runs/2/checkpoints && cp .data/runs/1/model/*.zip .data/runs/2/checkpoints/
-docker run --rm -e HAFNIA_CLOUD=true -e PYTHONPATH=src \
-  -v "$PWD/tests/data/micro-coco-2017:/opt/ml/input/data/training:ro" \
-  -v "$PWD/.data/runs/2/checkpoints:/opt/ml/checkpoints" \
-  -v "$PWD/.data/runs/2/model:/opt/ml/model" \
-  -v "$PWD/.data/runs/2/output:/opt/ml/output/data" \
-  "$IMAGE" python scripts/export_onnx_to_openvino.py --precision int8 --calibration-split-name all
-```
-
 ## Development
 
+The library is a member of the package-openvino uv workspace: `uv sync` in the workspace root installs it with
+all extras and the dev group. Run the commands in this folder:
+
 ```bash
-uv sync --all-extras         # Install dependencies incl. torch, rfdetr, onnxruntime, openvino and the dev group
 uv run pytest                # Run all tests (the first run downloads pretrained torchvision weights)
 uv run pytest -m "not slow"  # Skip the end-to-end export tests
 uv run pytest tests/inference_model_openvino  # Tests of one module (one folder per module under src/)
-uv run ruff check src tests scripts examples  # Lint
-uv run ruff format src tests scripts examples # Format
-uv run mypy src tests scripts examples        # Type check
+uv run ruff check src tests examples          # Lint
+uv run ruff format src tests examples         # Format
+uv run mypy src tests examples                # Type check
 ```
 
 ## Usage
-
-```bash
-# Export a pretrained model to an ONNX bundle (default: SSDLite320)
-python scripts/export_to_onnx.py
-python scripts/export_to_onnx.py --model-name RFDETRNano
-
-# Export a trainer-classification or trainer-object-detection model archive (e.g. a platform checkpoint)
-python scripts/export_to_onnx.py --model-path ../trainer-classification/pretrained_models/resnet18.zip
-
-# Convert an ONNX bundle to OpenVINO IR (FP32 by default, or --precision fp16)
-python scripts/export_onnx_to_openvino.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip
-
-# INT8 quantization, calibrated on a Hafnia dataset ('name:version' or a dataset folder)
-python scripts/export_onnx_to_openvino.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip --precision int8 \
-    --calibration-dataset coco-2017:1.0.0
-
-# Benchmark accuracy and latency of any bundle (here an ONNX bundle run on OpenVINO)
-python scripts/benchmark.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip --inference-engine openvino
-```
 
 ```python
 from inference_model_core import GraphInferenceModel, ModelBundle
@@ -223,6 +145,10 @@ model = GraphInferenceModel.from_path(
     device="CPU",  # "CUDA" runs the torch components and an ONNX Runtime network on the GPU
 )
 primitives = model.predict(image)  # List[Primitive], e.g. Bbox predictions
+
+# Benchmarks: Hafnia's metrics on a Hafnia dataset, and latency per component (e.g. 'network_p90_ms')
+metrics, dataset_predictions = model.benchmark(dataset)
+latency = model.measure_latency(images, batch_size=1)
 
 # Intermediate values of the graph (torch tensors)
 network_outputs = model.graph.run({"image": image}, outputs=["anchor_boxes", "anchor_scores"])

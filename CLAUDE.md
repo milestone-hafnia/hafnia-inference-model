@@ -1,34 +1,11 @@
-# package-openvino
+# hafnia-inference-model
 
-A Hafnia trainer package for generic model export and inference. It does no training: it converts model
-bundles to OpenVINO and runs any bundle through one `InferenceModel` interface that returns Hafnia primitives.
-[README.md](README.md) has the usage, [docs/design.md](docs/design.md) the design and the decisions with dates.
+The model bundle library: it writes bundles, converts them to OpenVINO and runs any bundle through one
+`InferenceModel` interface that returns Hafnia primitives. It is a member of the package-openvino uv workspace
+(`../`) until it moves to its own repository. [README.md](README.md) has the usage,
+[docs/design.md](docs/design.md) the design and the decisions with dates.
 
 ## Concept
-
-### Two environments, one model bundle
-
-```
-User's trainer package                  |  package-openvino (this repository)
-own code and dependencies               |  fixed code, users can't change it
-                                        |
-CV framework --export--> model bundle ==|==> model bundle --from_path()--> InferenceModel --> applications
-                                        |         |                              ^
-                                        |         +--> OpenVINO converter --> model bundle (OpenVINO IR)
-```
-
-- A user's trainer package trains with a CV framework (torchvision and RF-DETR today; Ultralytics, Darknet,
-  D-FINE, mmdetection and custom models are not supported yet) and exports a **model bundle**.
-- Only the bundle crosses the line: no Python code and no dependencies. **Loading a bundle never runs code
-  from it.**
-- This package is the same for every model. It converts a bundle to OpenVINO IR (FP32, FP16, INT8) and loads
-  any bundle with `GraphInferenceModel.from_path()`. The applications are predict, visualize, benchmark latency
-  and benchmark accuracy. Serving is not built yet.
-- Today the export step lives here too, as `model_exporters`. It is the only package that depends on the
-  frameworks, and in the concept it belongs on the trainer package side. A bundle with a torch network needs
-  `model_exporters` to rebuild the network, so the bundles that cross the line are ONNX or OpenVINO bundles.
-
-### Definition and implementation
 
 A bundle is a zip (or directory) with `model_info.json` and the files of each component. `model_info.json`
 describes the model as a graph of components that read and write named items of one data dictionary:
@@ -46,6 +23,9 @@ Implementation (torch):     TorchLoadImage  TorchResizeImage  TorchImageToTensor
 - **Graph engine**: torch runs every graph, and there is no choice of graph engine. Components exchange
   `torch.Tensor`s, which stay on the device of the component that produced them. ONNX and OpenVINO networks convert to NumPy at their boundary.
 - **Conversion** replaces the network component and keeps the rest: torch → ONNX → OpenVINO → INT8.
+- **Export**: `model_exporters` writes bundles of the supported frameworks (torchvision and RF-DETR today). It
+  is the only package that depends on the frameworks, and in the concept it belongs on the side of a user's
+  trainer package. A bundle with a torch network needs `model_exporters` to rebuild the network.
 
 ## Packages
 
@@ -53,15 +33,15 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 | Package | Role |
 |---|---|
-| `inference_model_core` | `ModelBundle` (model info schema, read, write, convert), component definitions, `GraphInferenceModel`, `load_graph` |
+| `inference_model_core` | `ModelBundle` (model info schema, read, write, convert), component definitions, `GraphInferenceModel` (incl. accuracy and latency benchmarks), `load_graph` |
 | `inference_model_torch` | The torch graph engine: `TorchModelGraph`, implementations of the standard definitions, network base classes, torch → ONNX |
 | `inference_model_onnxruntime` | `onnx_network` on ONNX Runtime |
 | `inference_model_openvino` | `openvino_network` on OpenVINO, `onnx_network` as an alternative, converters to OpenVINO IR and INT8 |
 | `model_exporters` | Model families: network definitions, torch implementations, and the functions that write bundles |
-| `package_openvino` | Trainer glue: checkpoints, datasets, latency, metrics, class mappings |
 
 ## Rules
 
+- Nothing here imports `package_openvino` or knows about the trainer package's scripts.
 - The user interface is two classes, `ModelBundle` and `GraphInferenceModel`. New functionality is a method
   on one of them, not a module-level function that does the same.
 - Every function that writes a bundle takes one path and returns the written `ModelBundle`. A path ending with
@@ -74,8 +54,8 @@ Each top-level package under `src/` is a separate concept that can later move to
 - A component type has one definition and one default implementation. An alternative implementation is
   registered as `<type>/<inference engine>` and chosen with `inference_engine=` at load time.
 - Implementations and converters outside the standard components are registered as entry points in
-  `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`), and only
-  there: no `@register_component` or `@register_converter` on them. Run `uv sync` after changing them.
+  this folder's `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`),
+  and only there: no `@register_component` or `@register_converter` on them. Run `uv sync` after changing them.
 - A new torch network needs no converter entry: `*/onnx` converts every torch network to ONNX.
 - A model family that reads trainer archives has a `create_trainer_archive_bundle` function in the module its
   pretrained entry points name. There is no table of trainer models.
@@ -92,14 +72,15 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 ## Commands
 
+Run them in this folder. `uv sync` in the workspace root installs the library with all extras and the dev group.
+
 ```bash
-uv sync --all-extras                           # Install everything incl. the dev group
-uv run pytest                                  # All tests, about 7 minutes
-uv run pytest -m "not slow"                    # Skip the end-to-end export tests
-uv run pytest tests/inference_model_torch      # One module (one tests folder per package under src/)
-uv run ruff check src tests scripts examples   # Lint
-uv run ruff format src tests scripts examples  # Format (line length 120)
-uv run mypy src tests scripts examples         # Type check
+uv run pytest                           # All tests, about 7 minutes
+uv run pytest -m "not slow"             # Skip the end-to-end export tests
+uv run pytest tests/inference_model_torch  # One module (one tests folder per package under src/)
+uv run ruff check src tests examples    # Lint
+uv run ruff format src tests examples   # Format (line length 120)
+uv run mypy src tests examples          # Type check
 ```
 
 Tests use the micro dataset in `tests/data` and run offline, apart from the first download of pretrained

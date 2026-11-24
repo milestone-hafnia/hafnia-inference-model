@@ -13,7 +13,6 @@ import pytest
 from helpers import network_of
 
 from inference_model_core import GraphInferenceModel, ModelBundle, NetworkParams
-from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("nncf")
@@ -55,7 +54,7 @@ def weights_size(path_bundle) -> int:
 
 def mean_average_precision(path_bundle, dataset) -> float:
     with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
-        metrics, _ = run_benchmark(dataset=dataset, model=GraphInferenceModel.from_path(path_bundle))
+        metrics, _ = GraphInferenceModel.from_path(path_bundle).benchmark(dataset)
     return metrics["object_detection/mAP"]
 
 

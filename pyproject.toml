@@ -1,11 +1,10 @@
 [project]
-name = "package-openvino"
+name = "hafnia-inference-model"
 version = "0.1.0"
-description = "Generic model export (ONNX -> OpenVINO) and model inference package for the Hafnia Platform"
+description = "Model bundles: describe a model as a graph of components, convert it to OpenVINO and run any bundle"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "cyclopts==4.5.1",
     "hafnia>=0.8.7",
     "numpy>=1.26",
     "pydantic>=2.10.4",
@@ -25,10 +24,7 @@ rfdetr = ["rfdetr==1.8.1"]  # RF-DETR bundles (model_exporters.rfdetr_detection)
 #                  conversion to ONNX and model_exporters (onnx)
 # - "rfdetr":      model_exporters.rfdetr_detection (rfdetr)
 
-[dependency-groups]
-dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
-
-# Component implementations, converters and pretrained models of the packages in this repo. A separately
+# Component implementations, converters and pretrained models of the packages in this distribution. A separately
 # installed package adds its own to the same groups. They are imported only when a bundle needs them.
 #
 # Implementations of component definitions on the torch graph engine (see 'inference_model_torch.component').
@@ -74,9 +70,10 @@ packages = [
     "src/inference_model_openvino",
     "src/inference_model_torch",
     "src/model_exporters",
-    "src/package_openvino",
 ]
 
+# The tool settings are the same as in the workspace root (package-openvino), so the library stays
+# self-contained when it moves to its own repo. The dev tools come from the root's dev group for now.
 [tool.ruff]
 extend-include = ["*.ipynb"]
 line-length = 120

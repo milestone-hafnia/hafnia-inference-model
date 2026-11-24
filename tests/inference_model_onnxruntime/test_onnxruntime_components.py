@@ -9,7 +9,6 @@ import pytest
 from helpers import assert_detections_match, network_of
 
 from inference_model_core import GraphInferenceModel, ModelBundle
-from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
@@ -83,7 +82,7 @@ def test_model_info_must_describe_the_onnx_graph(ssd, tmp_path):
 
 def test_hafnia_benchmark_on_micro_coco(ssd, micro_coco):
     model = GraphInferenceModel.from_path(ssd[2])
-    metrics, dataset_predictions = run_benchmark(dataset=micro_coco, model=model, batch_size=2)
+    metrics, dataset_predictions = model.benchmark(micro_coco, batch_size=2)
 
     assert "object_detection/predictions" in [task.name for task in dataset_predictions.info.tasks]
     assert metrics

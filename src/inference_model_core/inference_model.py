@@ -6,8 +6,10 @@ families, engines and formats: what a model does is described by the components 
 engine runs them.
 """
 
-from typing import List, Optional, Unpack
+import time
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Unpack
 
+import numpy as np
 from hafnia.dataset.benchmark.inference_model import ImageType, InferenceModel
 from hafnia.dataset.primitives import Primitive
 
@@ -15,8 +17,14 @@ from inference_model_core.bundle_io import PathLike
 from inference_model_core.graph import LoadSettings, ModelGraph, load_graph
 from inference_model_core.model_bundle import ModelBundle
 
+if TYPE_CHECKING:
+    from hafnia.dataset.hafnia_dataset import HafniaDataset
+
 INPUT_KEY = "image"
 OUTPUT_KEY = "predictions"
+
+LATENCY_TOTAL = "total"  # The latency stage of the whole 'predict_batch' call
+LATENCY_PERCENTILES = (50, 90, 99)
 
 
 class GraphInferenceModel(InferenceModel):
@@ -63,3 +71,69 @@ class GraphInferenceModel(InferenceModel):
 
     def get_model_info(self) -> ModelBundle:
         return self.graph.bundle
+
+    def benchmark(self, dataset: "HafniaDataset", batch_size: int = 1) -> Tuple[Dict[str, float], "HafniaDataset"]:
+        """Hafnia's benchmark ('hafnia.dataset.benchmark'): run the model on 'dataset' and compute the metrics of
+        its tasks. Returns (metrics, dataset with predictions).
+
+        The prediction classes of every model task that the dataset also has are aligned to the ground truth by
+        name: bundles have one class per model label (e.g. 91 for COCO models), datasets often fewer. Raises when
+        the ground truth has a class the model doesn't predict, as the label spaces then differ.
+        """
+        from hafnia.dataset.benchmark.benchmark import metric_calculations, run_inference_on_dataset
+
+        from inference_model_core.benchmark import align_prediction_classes
+
+        predictions = run_inference_on_dataset(dataset=dataset, model=self, batch_size=batch_size)
+        dataset_task_names = {task.name for task in dataset.info.tasks}
+        for task in self.get_model_info().tasks:
+            if task.name in dataset_task_names:
+                predictions = align_prediction_classes(predictions, task.name)
+        return metric_calculations(prediction_dataset=predictions), predictions
+
+    def measure_latency(self, images: Sequence[ImageType], batch_size: int = 1, warmup: int = 10) -> Dict[str, float]:
+        """Time the components of 'predict_batch' over 'images', in batches of 'batch_size'.
+
+        Measures synchronous latency: one call at a time, as 'predict_batch' runs. Throughput modes that overlap
+        several requests (e.g. OpenVINO async infer requests) give different numbers and are not covered.
+
+        Images should be loaded arrays, so that reading files is not measured. The first 'warmup' batches
+        (cycling through the images) are run but not timed: engines allocate memory and pick kernels on the
+        first calls.
+
+        Returns per stage the mean and the 'LATENCY_PERCENTILES' latency per batch in milliseconds (e.g.
+        'network_p90_ms'), and 'throughput_images_per_s' over the timed batches. The stages are the components
+        that compute the predictions, in graph order (e.g. 'resize', 'network', 'nms'), and 'total', which also
+        covers the time between the components (batching the values). A component is charged with moving its
+        inputs to its device.
+        """
+        if batch_size < 1:
+            raise ValueError(f"'batch_size' must be at least 1, got {batch_size}.")
+        if len(images) == 0:
+            raise ValueError("At least one image is needed.")
+        batches = [list(images[start : start + batch_size]) for start in range(0, len(images), batch_size)]
+
+        for i_warmup in range(warmup):
+            self.predict_batch(batches[i_warmup % len(batches)])
+
+        components = self.get_model_info().graph.components_for([OUTPUT_KEY])
+        stages = [*(component.name for component in components), LATENCY_TOTAL]
+        timings: Dict[str, List[float]] = {stage: [] for stage in stages}
+        n_images = 0
+        for batch in batches:
+            batch_timings: Dict[str, float] = {}
+            start = time.perf_counter()
+            self.graph.run_batch({INPUT_KEY: batch}, outputs=[OUTPUT_KEY], timings=batch_timings)
+            batch_timings[LATENCY_TOTAL] = time.perf_counter() - start
+            for stage in stages:
+                timings[stage].append(batch_timings[stage])
+            n_images += len(batch)
+
+        report = {}
+        for stage, seconds in timings.items():
+            milliseconds = np.asarray(seconds) * 1000
+            report[f"{stage}_mean_ms"] = float(milliseconds.mean())
+            for percentile in LATENCY_PERCENTILES:
+                report[f"{stage}_p{percentile}_ms"] = float(np.percentile(milliseconds, percentile))
+        report["throughput_images_per_s"] = n_images / sum(timings[LATENCY_TOTAL])
+        return report

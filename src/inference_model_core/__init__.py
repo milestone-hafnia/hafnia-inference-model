@@ -9,7 +9,7 @@ from inference_model_core.bundle_io import MODEL_INFO_FILENAME
 from inference_model_core.convert import ConversionRequest, list_converters, register_converter
 from inference_model_core.definition import ComponentDefinition, Port, Ports
 from inference_model_core.graph import LoadSettings, ModelGraph, load_graph
-from inference_model_core.inference_model import GraphInferenceModel
+from inference_model_core.inference_model import INPUT_KEY, OUTPUT_KEY, GraphInferenceModel
 from inference_model_core.model_bundle import (
     ComponentInfo,
     ConversionInfo,
@@ -21,7 +21,9 @@ from inference_model_core.model_bundle import (
 from inference_model_core.transform import ImageTransform
 
 __all__ = [
+    "INPUT_KEY",
     "MODEL_INFO_FILENAME",
+    "OUTPUT_KEY",
     "ComponentDefinition",
     "ComponentInfo",
     "ConversionInfo",

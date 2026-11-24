@@ -1,11 +1,12 @@
-# package-openvino: Generic Model Export and Inference
+# hafnia-inference-model: Generic Model Export and Inference
 
 Status: implemented. Designed and reviewed on 2026-11-18, redesigned on 2026-11-20 as a graph of
 components, and on 2026-11-23 split into component definitions and a torch graph engine (section 2).
 Since 2026-11-24 the user interface is the `ModelBundle` and `GraphInferenceModel` classes (2.5, 2.6).
-See [section 10](#10-decisions) for the decisions.
-Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
-`../trainer-object-detection` and `../trainer-classification`.
+See [section 9](#9-decisions) for the decisions.
+Scope: the `hafnia-inference-model` library. It started inside the `package-openvino` trainer package,
+built locally next to `../hafnia`, `../trainer-object-detection` and `../trainer-classification`, and is a
+separate distribution since 2026-11-24 (section 5).
 
 ---
 
@@ -32,9 +33,10 @@ Two things have to be standardized to make this work:
 - **The storage format**: a model bundle (one zip) holding the serialized model plus a
   machine-readable description, "model info", that says how to run it and what it returns.
 
-For this first iteration everything lives in one trainer package, `package-openvino`. It does
-**no training**. Its scripts are generic: they work on any model bundle whose components are
-installed, not on one specific architecture.
+The first iteration lived in one trainer package, `package-openvino`, which does **no training**.
+Since 2026-11-24 the bundles and everything that reads, writes, converts and runs them are this
+library, and the trainer package holds the scripts. Both are generic: they work on any model bundle
+whose components are installed, not on one specific architecture.
 
 ---
 
@@ -498,9 +500,9 @@ task, and trainer archives pass through unchanged. `detections_to_bboxes` only d
 the task's classes (`task_label_mask`, for RF-DETR's "no object" column).
 
 The cost is in evaluation: Hafnia's metrics require the prediction task's class names to equal the
-ground truth's, in order. `package_openvino/metrics.py` aligns the predictions to the dataset's
-classes by name before computing metrics (`align_prediction_classes`, and a `run_benchmark`
-wrapper), removing predictions of other classes. It raises when the dataset has classes the model
+ground truth's, in order. `GraphInferenceModel.benchmark` aligns the predictions to the dataset's
+classes by name before computing metrics (`align_prediction_classes` in
+`inference_model_core/benchmark.py`), removing predictions of other classes. It raises when the dataset has classes the model
 doesn't, since then the label spaces differ and a class mapping is needed. A cleaner long-term fix
 is upstream in hafnia: let the metrics ignore prediction classes the ground truth doesn't have.
 
@@ -517,6 +519,10 @@ iteration (Q5).
 The brief asks for concepts to be separated now so they can move to their own repos later.
 The cleanest way: **several top-level Python packages inside one distribution.** When a
 module later moves to its own repo, import paths stay the same.
+
+Since 2026-11-24 this library is its own distribution, `hafnia-inference-model`, a member of the
+package-openvino uv workspace until it moves to its own repo. The trainer package depends on it, never
+the other way round. Why and when it moves: package-openvino's [design](../../docs/design.md#decisions).
 
 The [README](../README.md#layout) lists what each package is for. The repository itself is the
 file tree.
@@ -551,23 +557,22 @@ flowchart LR
     B --> M
     D --> M
     Q --> M
-    M --> F[benchmark.py<br/>accuracy + latency per component]
-    F --> G[HafniaLogger metrics<br/>predictions dataset]
+    M --> F[benchmark, measure_latency<br/>accuracy + latency per component]
 ```
 
-Only the network component changes along the way. `scripts/export_to_onnx.py` does the first two
-arrows, `scripts/export_onnx_to_openvino.py` the conversions to OpenVINO.
+Only the network component changes along the way. In package-openvino, `scripts/export_to_onnx.py`
+does the first two arrows, `scripts/export_onnx_to_openvino.py` the conversions to OpenVINO and
+`scripts/benchmark.py` the benchmarks, logged with `HafniaLogger`.
 
 The ONNX Runtime path is the **reference**. Comparing ORT vs OpenVINO FP32 vs OpenVINO INT8 on the
 same dataset is the main way to confirm that conversion and quantization didn't break the model.
 
 ---
 
-## 7. Model families and scripts
+## 7. Model families
 
-All scripts follow the trainer conventions: `cyclopts` CLI, `HafniaLogger`, input bundle taken
-from the checkpoint dir when present (otherwise a `--model-path`), output written to
-`logger.path_model()`, `auto_save_command_builder_schema` for the `*.schema.json` files.
+The scripts that run these steps on the Hafnia platform are package-openvino's, see its
+[design](../../docs/design.md).
 
 ### 7.1 Model families (`model_exporters`)
 
@@ -670,108 +675,9 @@ original image size, not `image_size`. Training only resizes with `--resize`, wh
 stores `image_size` (224 by default) either way. Our bundle follows the archive's `image_size`,
 which matches training only when training resized.
 
-### 7.2 `scripts/export_to_onnx.py`
-
-- Input: a checkpoint or `--model-path` trainer archive, otherwise a pretrained `--model-name`.
-- Writes the bundle with the torch network to a temporary folder (the bundle helper), converts it
-  with `ModelBundle.convert("onnx", options={"opset_version": ...})` and writes the ONNX bundle
-  to the experiment model folder. The bundle is loaded once to fail here, not downstream.
-
-### 7.3 `scripts/export_onnx_to_openvino.py`
-
-- Input bundle from the checkpoint dir when present, otherwise `--model-path`.
-  `--precision fp32|fp16|int8` (default fp32), `--device` for the verification run.
-- `fp32` / `fp16`: `ModelBundle.convert("openvino", options={"precision": ...})`. Weights are
-  compressed to FP16 only when asked (design review 4.2). SSDLite320: `model.bin` is 13.8 MB in
-  FP32 and 6.9 MB in FP16.
-- After conversion, the source and the converted bundle both run on OpenVINO with the same image,
-  and the largest difference of the converted network's outputs is logged. SSDLite320: 0 in FP32.
-  In FP16, 0.16 px on boxes and 1e-3 on scores.
-- Not done yet: static-shape reshape (needed for NPU) and Model API `rt_info`.
-
-**INT8** (`--precision int8`): `ModelBundle.convert("openvino_int8", calibration_inputs=...)`,
-NNCF post-training quantization of an FP32 ONNX or IR network.
-
-- Calibration data as in the trainers: the experiment's dataset on the platform, locally
-  `--calibration-dataset name:version` (default `coco-2017:1.0.0`) or a dataset folder.
-  `--calibration-split-name` (default `validation`, or `all`), `--calibration-samples` (default
-  300, a warning below that).
-- **Nodes kept in floating point.** NNCF's default quantized the SSD box decoding and softmax as
-  well. Pixel coordinates and scores in 8 bit dropped mAP from 0.348 to 0.152 on the micro dataset,
-  and the noisy scores let so many boxes through that NMS made `predict` 30× slower (450 ms).
-  Which graph parts must stay in float depends on the graph, so the code that builds the network
-  stores them as the `openvino_int8` option `ignored_node_patterns` (ONNX node name regexes), and
-  the converter only reads them. A test checks that every pattern still matches a node, so a
-  renamed graph doesn't silently lose the protection.
-- **RF-DETR needs NNCF's transformer mode** (option `model_type: transformer`): the default
-  dropped mAP from 0.66 to 0.0; transformer mode gives 0.668.
-- Preset `mixed` by default (asymmetric activations, suited to MobileNetV3's hard-swish).
-  `performance` is the alternative (`--quantization-preset`).
-- Results, calibrated on the 8 micro images: SSDLite320 mAP 0.348 → 0.316 on those images. On 100
-  `coco-2017` images, FP32 0.307 vs INT8 0.295–0.298. Faster R-CNN 0.282 → 0.275. ResNet18 keeps
-  the top-1 class on 7 of 8 images. `model.bin`: SSDLite320 13.8 → 4.2 MB.
-- **INT8 speed depends on the hardware.** The dev laptop (i7-10875H) has AVX2 but no VNNI/AMX:
-  SSD and Faster R-CNN take the same time in INT8 as in FP32, ResNet18 is 2.5× faster, RF-DETR is
-  slower (163 vs 108 ms). INT8 latency has to be measured on the target hardware.
-- Not done yet: `nncf.quantize_with_accuracy_control`.
-
-### 7.4 `scripts/benchmark.py`
-
-- Any bundle from the checkpoint or `--model-path`, `--inference-engine` to run its components on
-  another engine, `--device` passed to the engines. Dataset as in the other scripts; `--split-name`
-  (default `test`, or `all`), `--samples`, `--batch-size`.
-- **Accuracy**: Hafnia's `run_inference_on_dataset` + `metric_calculations`, with the bundle's
-  default (low) score threshold. Prediction classes are aligned to the dataset's by name first
-  (e.g. 91 COCO model classes to `coco-2017`'s 80). `--model-class-mapping` /
-  `--dataset-class-mapping` take a JSON file or inline JSON object and are applied with
-  `class_mapper(method="remove_undefined")`. Splits without ground truth only run inference. The
-  predictions (annotations only) are written to the artifacts folder.
-- **Latency**: `measure_latency` times **every component of the graph** per batch after `--warmup`
-  untimed batches, on `--latency-samples` loaded images. Reports mean, p50, p90, p99 per component
-  and in total in ms (`latency/network_p90_ms`, `latency/nms_mean_ms`, ...) and throughput in
-  images/s. The latency run uses `--latency-score-threshold` (default 0.3), because the time of
-  the components after the network depends on it.
-- Everything is logged through `HafniaLogger`: configuration (model, the implementation of each
-  component, engine versions, device, precision, dataset, split, batch size, settings) and
-  metrics, plus a summary table.
-- **Latency note (SSD, CPU, ONNX Runtime, torch graph engine).** About 1.4 ms for resize and
-  tensor conversion and 8 ms for the network. NMS takes about 25 ms at the torchvision default
-  threshold of 0.001 (about 27k candidates) and 1.8 ms at 0.3. Benchmarks must state the threshold.
-  Accuracy runs use a low one, latency runs a serving one.
-- Not done yet: throughput mode (OpenVINO async infer requests), `--task-name` for datasets with
-  several tasks of the model's primitive.
-
 ---
 
-## 8. Trainer package in Docker
-
-**Still open: an experiment on the Hafnia platform.** The local Docker run below was done on
-2026-11-19 with the micro dataset mounted as the experiment dataset. **It was not repeated after
-the redesign of 2026-11-20**: the scripts kept their arguments, and were run locally since.
-
-- `hafnia trainer create-zip .`: 817 KiB (scripts, `src/`, Dockerfile, lock file; tests, examples
-  and data excluded by `.hafniaignore`).
-- `hafnia runc build-local trainer.zip`: builds, image 13.8 GB (see the risks below). The image
-  installs the project itself, which the component and converter entry points need.
-- In the image, with `HAFNIA_CLOUD=true` and the platform folders mounted, all three scripts run
-  in platform mode, each taking the previous output as its checkpoint:
-  `export_to_onnx.py` (25 s, downloads the torchvision weights) →
-  `export_onnx_to_openvino.py --precision int8 --calibration-split-name all` (22 s) →
-  `benchmark.py --split-name all` (13 s: mAP 0.317, 86 images/s on the dev laptop CPU).
-- `hafnia runc launch-local` itself could not be used on this machine:
-  - It runs `docker run --runtime nvidia`, and the NVIDIA container runtime is not installed
-    here. The package doesn't need a GPU.
-  - It mounts only the dataset. A script that needs an input bundle (a checkpoint in
-    `/opt/ml/checkpoints`) can't be tested with it, and outputs are lost with the container.
-  - The README shows the equivalent `docker run` with the checkpoint and output folders
-    mounted.
-- Platform needs: internet access for the pretrained torchvision weights
-  (download.pytorch.org), and a way to pass the output bundle of one experiment as the
-  checkpoint of the next.
-
----
-
-## 9. Risks and things to watch
+## 8. Risks and things to watch
 
 - **Genericity is only proven by more model families.** Four families with different networks
   (single-stage, two-stage, transformer, classifier) now share all engine code. The next test is a
@@ -799,7 +705,7 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 
 ---
 
-## 10. Decisions
+## 9. Decisions
 
 **The `ModelBundle` interface (2026-11-24):**
 
@@ -870,7 +776,7 @@ what became of them:
 | 2. Engine binding | The bundle's engine is a default that the caller can override | Per component: `inference_engine=` |
 | 3. Preprocessing | One implementation, also used for quantization calibration | Calibration runs the graph itself up to the component |
 | 4.1 Settings | Typed decoder settings with load-time overrides; engine options separate | `params=` per component, `engine_options` |
-| 4.2 Precision | FP16 compression only when asked, recorded in the model info | Unchanged (7.3) |
+| 4.2 Precision | FP16 compression only when asked, recorded in the model info | Unchanged (package-openvino's `export_onnx_to_openvino.py`) |
 | 4.3 Open strings | Not applied | Applied: `type` and engine names are plain strings |
 | 4.4 `framework` in the dispatch key | Not applied | Applied: nothing dispatches on `framework` |
 | 4.5 `uint8` input | `scale` defaults to `None` for `uint8` tensors | Unchanged (`image_to_tensor`) |
