@@ -6,7 +6,6 @@ families, engines and formats: what a model does is described by the components 
 engine runs them.
 """
 
-from pathlib import Path
 from typing import Any, List, Mapping, Optional
 
 from hafnia.dataset.benchmark.inference_model import ImageType, InferenceModel
@@ -104,6 +103,7 @@ class GraphInferenceModel(InferenceModel):
     def get_model_info(self) -> ModelBundle:
         return self.graph.bundle
 
-    def write_model(self, path_bundle: PathLike, overwrite: bool = False) -> Path:
-        """Write the model as a bundle. A path ending with '.zip' creates a zip, otherwise a folder."""
+    def write_model(self, path_bundle: PathLike, overwrite: bool = False) -> ModelBundle:
+        """Write the model as a bundle and return the written bundle. A path ending with '.zip' creates a zip,
+        otherwise a folder."""
         return self.graph.write(path_bundle, overwrite=overwrite)

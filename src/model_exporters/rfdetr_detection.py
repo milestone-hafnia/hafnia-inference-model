@@ -108,7 +108,7 @@ def load_pretrained_model(model_name: str) -> Tuple[detr.RFDETR, List[str]]:
 
 def create_pretrained_rfdetr_detection_bundle(
     model_name: str, path_bundle: Union[str, Path], overwrite: bool = False
-) -> Path:
+) -> ModelBundle:
     model, categories = load_pretrained_model(model_name)
     path_weights = Path(model.model_config.pretrain_weights or "")
     return create_rfdetr_detection_bundle(
@@ -126,7 +126,7 @@ def create_pretrained_rfdetr_detection_bundle(
 
 def create_trainer_archive_rfdetr_bundle(
     path_archive: Union[str, Path], path_bundle: Union[str, Path], overwrite: bool = False
-) -> Path:
+) -> ModelBundle:
     """Bundle of a trainer-object-detection archive, with the task of the archive."""
     with open_trainer_archive(path_archive) as (config, path_weights):
         model_name = config["name"]
@@ -157,8 +157,10 @@ def create_rfdetr_detection_bundle(
     variant: Optional[str] = None,
     overwrite: bool = False,
     provenance: Optional[dict] = None,
-) -> Path:
+) -> ModelBundle:
     """Write an RF-DETR detection model as a model bundle with a torch network.
+
+    Returns the written bundle, so it can be converted or loaded without reading it again.
 
     Args:
         model: RF-DETR model ('rfdetr.detr.RFDETR') built from 'path_weights'. Its settings (resolution,
@@ -237,8 +239,7 @@ def create_rfdetr_detection_bundle(
     )
     with tempfile.TemporaryDirectory(prefix="rfdetr_bundle_") as tmp_dir:
         path_checkpoint = write_checkpoint(path_weights, Path(tmp_dir) / "weights.pth")
-        write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_checkpoint}, overwrite=overwrite)
-        return Path(path_bundle)
+        return write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_checkpoint}, overwrite=overwrite)
 
 
 def write_checkpoint(path_source: Union[str, Path], path_checkpoint: Path) -> Path:

@@ -178,8 +178,9 @@ def test_duplicate_registration(dummy_network):
 
 def test_write_round_trip(tmp_path, dummy_network):
     graph = load_graph(write_dummy_bundle(tmp_path / "model_dir"))
-    path_copy = graph.write(tmp_path / "copy.zip")
-    copy = load_graph(path_copy)
+    written = graph.write(tmp_path / "copy.zip")
+    assert written.path == tmp_path / "copy.zip"
+    copy = load_graph(written)
 
     assert network(copy).detections == DUMMY_DETECTIONS
     assert copy.bundle == graph.bundle

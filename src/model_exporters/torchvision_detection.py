@@ -102,7 +102,7 @@ def load_pretrained_model(model_name: str) -> Tuple[nn.Module, List[str]]:
 
 def create_pretrained_torchvision_detection_bundle(
     model_name: str, path_bundle: Union[str, Path], overwrite: bool = False
-) -> Path:
+) -> ModelBundle:
     model, categories = load_pretrained_model(model_name)
     return create_torchvision_detection_bundle(
         model,
@@ -125,8 +125,10 @@ def create_torchvision_detection_bundle(
     variant: Optional[str] = None,
     overwrite: bool = False,
     provenance: Optional[dict] = None,
-) -> Path:
+) -> ModelBundle:
     """Write a torchvision detection model (pretrained or fine-tuned) as a model bundle with a torch network.
+
+    Returns the written bundle, so it can be converted or loaded without reading it again.
 
     Args:
         model: An 'SSD' or 'FasterRCNN' model. It is not modified.
@@ -165,8 +167,7 @@ def create_torchvision_detection_bundle(
     with tempfile.TemporaryDirectory(prefix="torchvision_bundle_") as tmp_dir:
         path_weights = Path(tmp_dir) / "weights.pth"
         torch.save(model.state_dict(), path_weights)
-        write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
-        return Path(path_bundle)
+        return write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
 
 
 def _network_conversions(onnx_options: Dict[str, Any], int8_options: Dict[str, Any]) -> Dict[str, ConversionInfo]:

@@ -53,6 +53,15 @@ def test_model_info(resnet18_torch, resnet18):
     assert info.graph.get_component("resize").params["antialias"]
 
 
+def test_from_pretrained(resnet18_torch, images, tmp_path):
+    """'ModelBundle.from_pretrained' finds the model by name and gives the bundle of the bundle helper."""
+    bundle = ModelBundle.from_pretrained("resnet18", tmp_path / "resnet18.zip")
+    assert bundle.path == tmp_path / "resnet18.zip"
+    assert (bundle.name, bundle.framework, bundle.variant) == ("resnet18", "torchvision", "resnet18")
+    expected = GraphInferenceModel.from_path(resnet18_torch[2]).predict(images[0])
+    assert GraphInferenceModel.from_bundle(bundle).predict(images[0]) == expected
+
+
 def test_torch_bundle_matches_torch(resnet18_torch, images):
     """The torch network is rebuilt from the architecture name and the stored weights."""
     torch_model, _, path_bundle = resnet18_torch
@@ -101,17 +110,17 @@ def test_trainer_archive(tmp_path, images):
         archive.writestr("model_config.json", json.dumps({**config, "image_size": 64}))
         archive.write(path_weights, arcname="resnet18.pth")
 
-    path_torch_bundle = create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle_torch.zip")
-    torch_info = ModelBundle.from_path(path_torch_bundle)
+    torch_info = create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle_torch.zip")
+    assert torch_info.path == tmp_path / "bundle_torch.zip"
     assert torch_info.tasks[0].get_class_names() == ["cat", "dog", "car"]
     assert torch_info.graph.get_component("network").params["image_size"] == 64
     assert torch_info.graph.get_component("resize").params["height"] == 64
 
-    path_bundle = ModelBundle.from_path(path_torch_bundle).convert("onnx", tmp_path / "bundle.zip").path
+    path_bundle = torch_info.convert("onnx", tmp_path / "bundle.zip").path
     network = ModelBundle.from_path(path_bundle).graph.get_component("network")
     assert NetworkParams.model_validate(network.params).input_tensors[0].shape == [None, 3, 64, 64]
 
-    for model in (GraphInferenceModel.from_path(path_torch_bundle), GraphInferenceModel.from_path(path_bundle)):
+    for model in (GraphInferenceModel.from_bundle(torch_info), GraphInferenceModel.from_path(path_bundle)):
         for image in images:
             image_64 = cv2.resize(image, (64, 64), interpolation=cv2.INTER_AREA)
             expected = torch_probabilities(torch_model, image_64, 64)

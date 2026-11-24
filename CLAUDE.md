@@ -62,8 +62,9 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 ## Rules
 
-- The user interface is two classes: `ModelBundle` (`from_path`, `from_zip`, `write`, `write_zip`, `convert`)
-  and `GraphInferenceModel` (`from_path`, `from_bundle`). Don't add module-level functions that do the same.
+- The user interface is two classes: `ModelBundle` (`from_path`, `from_zip`, `from_pretrained`, `write`,
+  `write_zip`, `convert`) and `GraphInferenceModel` (`from_path`, `from_bundle`). Don't add module-level
+  functions that do the same.
 - `inference_model_core` imports no torch, no graph engine and no inference engine. A test checks this.
 - The inference engine packages import `inference_model_core` and `inference_model_torch`, never each other.
 - A component type has one definition and one default implementation. An alternative implementation is
@@ -71,6 +72,9 @@ Each top-level package under `src/` is a separate concept that can later move to
 - Implementations and converters outside the standard components are registered as entry points in
   `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`). Run `uv sync`
   after changing them.
+- A pretrained model is one entry point per model name (`hafnia.inference_model_pretrained_models`), behind
+  `ModelBundle.from_pretrained`. A model family is imported only when one of its models is asked for, so a
+  new family never adds a dependency to the other models.
 - Values in the data dictionary are per sample, without a batch axis. A `batched` component gets them stacked.
 - The bundle format has a version (`MODEL_INFO_FORMAT_VERSION`). Bundles of another major version are
   rejected, so a change to the schema needs a new version.

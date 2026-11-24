@@ -91,7 +91,7 @@ def test_frcnn_images_without_proposals(frcnn, frcnn_ir, fill_value):
 
 def test_write_model_round_trip(ssd_ir, images, tmp_path):
     model = GraphInferenceModel.from_path(ssd_ir)
-    path_copy = model.write_model(tmp_path / "copy")
+    path_copy = model.write_model(tmp_path / "copy").path
     assert sorted(p.name for p in path_copy.iterdir()) == ["model_info.json", "network"]
     assert sorted(p.name for p in (path_copy / "network").iterdir()) == ["model.bin", "model.xml"]
     assert GraphInferenceModel.from_path(path_copy).predict(images[0]) == model.predict(images[0])

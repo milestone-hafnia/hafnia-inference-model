@@ -11,7 +11,6 @@ listed in the 'hafnia.inference_model_graph_engines' entry point group and impor
 """
 
 from importlib.metadata import entry_points
-from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Union
 
 from inference_model_core.bundle_io import PathLike
@@ -42,8 +41,8 @@ class ModelGraph(Protocol):
         run. 'timings' collects the seconds spent per component."""
         ...
 
-    def write(self, path_bundle: PathLike, overwrite: bool = False) -> Path:
-        """Write the model as a bundle."""
+    def write(self, path_bundle: PathLike, overwrite: bool = False) -> ModelBundle:
+        """Write the model as a bundle and return the written bundle."""
         ...
 
 

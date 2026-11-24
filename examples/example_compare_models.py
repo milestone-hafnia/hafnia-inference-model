@@ -38,7 +38,6 @@ from rich import print as rprint
 from rich.table import Table
 
 from inference_model_core import GraphInferenceModel, ModelBundle
-from model_exporters.registry import create_pretrained_bundle
 from package_openvino.metrics import run_benchmark
 
 MODELS = {
@@ -62,8 +61,8 @@ def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dic
     path_fp32 = PATH_OUTPUT / f"{model_name}_openvino_fp32.zip"
     path_fp16 = PATH_OUTPUT / f"{model_name}_openvino_fp16.zip"
     path_int8 = PATH_OUTPUT / f"{model_name}_openvino_int8.zip"
-    create_pretrained_bundle(model_name, path_torch, overwrite=True)
-    bundle_onnx = ModelBundle.from_path(path_torch).convert("onnx", path_onnx, overwrite=True)
+    bundle_torch = ModelBundle.from_pretrained(model_name, path_torch, overwrite=True)
+    bundle_onnx = bundle_torch.convert("onnx", path_onnx, overwrite=True)
     bundle_onnx.convert("openvino", path_fp32, overwrite=True)
     bundle_onnx.convert("openvino", path_fp16, options={"precision": "fp16"}, overwrite=True)
     calibration_inputs = [{"image": image} for image in calibration_images]

@@ -8,7 +8,6 @@ components runs on the GPU from the image to the detections.
 """
 
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Type
 
 import torch
@@ -74,8 +73,9 @@ class TorchModelGraph:
             ]
         return cls(bundle, components)
 
-    def write(self, path_bundle: PathLike, overwrite: bool = False) -> Path:
-        """Write the model as a bundle. A path ending with '.zip' creates a zip, otherwise a folder."""
+    def write(self, path_bundle: PathLike, overwrite: bool = False) -> ModelBundle:
+        """Write the model as a bundle and return the written bundle. A path ending with '.zip' creates a zip,
+        otherwise a folder."""
         loaded = {component.info.name for component in self.components}
         not_loaded = [info.name for info in self.bundle.graph.components if info.name not in loaded]
         if not_loaded:
@@ -83,8 +83,7 @@ class TorchModelGraph:
         files: Dict[str, FileSource] = {}
         for component in self.components:
             files.update(component.files())
-        write_by_suffix(self.bundle, path_bundle, files=files, overwrite=overwrite)
-        return Path(path_bundle)
+        return write_by_suffix(self.bundle, path_bundle, files=files, overwrite=overwrite)
 
     # --- execution -----------------------------------------------------------------------------------
     def run(self, inputs: Mapping[str, Any], outputs: Optional[Sequence[str]] = None) -> Dict[str, Any]:

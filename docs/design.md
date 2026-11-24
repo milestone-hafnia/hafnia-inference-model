@@ -355,6 +355,22 @@ Reading only reads the model info and checks that the listed files are there. A 
 memory (by the bundle helpers) has no place yet and gets its files in `write(path, files=...)`.
 Two bundles are equal when their descriptions are, wherever their files are.
 
+A pretrained model is written as a bundle by its name:
+
+```python
+ModelBundle.list_pretrained()  # ['RFDETRLarge', ..., 'resnet18', 'ssdlite320_mobilenet_v3_large']
+bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")
+```
+
+The names are the entry points of the group `hafnia.inference_model_pretrained_models`, one per
+model. Each points at a function `(name, path_bundle, overwrite) -> ModelBundle` of a model family
+(8.1), which is imported only when one of its models is asked for. So `resnet18` needs torch and
+torchvision but not `rfdetr`, listing the names imports nothing, and `inference_model_core` stays free
+of torch. A missing dependency gives an error that names the model and the function, and a name that
+two packages register is an error too. Another package adds its models to the same group. Unlike
+`from_path`, `from_pretrained` creates the bundle: it downloads the weights on first use and writes
+them to `path_bundle`, which is required as a `ModelBundle` holds no file contents in memory.
+
 A bundle is converted **component by component** with one generic method, which writes a new
 bundle and returns it:
 
@@ -418,7 +434,7 @@ class ModelGraph(Protocol):  # graph.py: what every graph engine provides
 
     def run(self, inputs, outputs=None) -> Dict[str, Any]: ...  # one sample
     def run_batch(self, inputs, outputs=None, timings=None) -> Dict[str, List[Any]]: ...
-    def write(self, path_bundle, overwrite=False) -> Path: ...
+    def write(self, path_bundle, overwrite=False) -> ModelBundle: ...
 
 
 def load_graph(
@@ -450,7 +466,7 @@ class GraphInferenceModel(hafnia.InferenceModel):  # inference_model.py
     def predict(self, image, sample_dict=None) -> List[Primitive]: ...
     def predict_batch(self, images, sample_dicts=None) -> List[List[Primitive]]: ...
     def get_model_info(self) -> ModelBundle: ...
-    def write_model(self, path_bundle, overwrite=False) -> Path: ...
+    def write_model(self, path_bundle, overwrite=False) -> ModelBundle: ...  # the written bundle
 
 
 class ModelBundle(hafnia.ModelInfo):  # model_bundle.py: the content of model_info.json (section 5)
@@ -460,6 +476,10 @@ class ModelBundle(hafnia.ModelInfo):  # model_bundle.py: the content of model_in
     def from_path(cls, path_bundle) -> "ModelBundle": ...  # folder or zip
     @classmethod
     def from_zip(cls, path_zip) -> "ModelBundle": ...  # zip only
+    @classmethod
+    def list_pretrained(cls) -> List[str]: ...  # names of the pretrained models, imports nothing
+    @classmethod
+    def from_pretrained(cls, name, path_bundle, overwrite=False) -> "ModelBundle": ...  # writes the bundle
     def read_file(self, relative_path) -> bytes: ...
     def open_dir(self) -> ContextManager[Path]: ...  # a folder with the files, extracted from a zip
     def write(self, path_dir, files=None, overwrite=False) -> "ModelBundle": ...  # a folder
@@ -610,7 +630,7 @@ module later moves to its own repo, import paths stay the same.
 
 ```
 package-openvino/
-├── pyproject.toml            # hatch: packages = [all src/* below]; entry points for the graph engine, components and converters
+├── pyproject.toml            # hatch: packages = [all src/* below]; entry points for the graph engine, components, converters and pretrained models
 ├── Dockerfile                # same pattern as trainer-object-detection
 ├── .hafniaignore  .python-version  README.md
 ├── docs/design.md            # this document (+ design_review.md, a review of the flavor design)
@@ -638,7 +658,7 @@ package-openvino/
 │   │   ├── components.py            #   'openvino_network' on OpenVINO, 'onnx_network' as an alternative
 │   │   └── convert.py               #   converters to OpenVINO IR: FP32, FP16, INT8 (NNCF)
 │   ├── model_exporters/             # model families: network definitions, torch implementations, bundle helpers
-│   │   ├── registry.py              #   pretrained name or trainer archive → bundle helper
+│   │   ├── registry.py              #   trainer archive → bundle helper
 │   │   ├── trainer_archive.py       #   trainer model archives (model_config.json + weights)
 │   │   ├── class_names.py           #   one task class per model label, placeholder names
 │   │   ├── definitions.py           #   definitions of the families' torch networks (torch free)
@@ -723,9 +743,13 @@ from the checkpoint dir when present (otherwise a `--model-path`), output writte
 
 Each family module has the torch component of its network and functions that write a bundle with
 that network: `create_torchvision_detection_bundle`, `create_torchvision_classification_bundle`,
-`create_rfdetr_detection_bundle`, plus `create_pretrained_bundle(name)` and
-`create_bundle_from_trainer_archive(path)` in `registry.py`, which pick the family (importing it
-only then, so torchvision models don't need `rfdetr`).
+`create_rfdetr_detection_bundle`. Two things pick the family, importing it only then, so
+torchvision models don't need `rfdetr`: `ModelBundle.from_pretrained(name, path)` for a pretrained
+model, through the family's `create_pretrained_*_bundle` function that is registered as the entry
+point of the model name (3.6), and `create_bundle_from_trainer_archive(path_archive, path)` in
+`registry.py` for a trainer archive. They all return the written `ModelBundle`, so the bundle is
+converted or loaded without reading it again:
+`ModelBundle.from_pretrained(name, path).convert("onnx", path_onnx)`.
 
 | | SSDLite320 | Faster R-CNN 320 | ResNet18 | RF-DETR (Nano to Large) |
 |---|---|---|---|---|
@@ -967,10 +991,12 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 
 | Question | Decision |
 |---|---|
-| What is the user interface? | **Two classes.** `ModelBundle` (`from_path`, `from_zip`, `write`, `write_zip`, `convert`) and `GraphInferenceModel.from_path`. They replace the functions `read_model_info`, `write_bundle`, `convert_bundle` and `inference_model_from_path`, so there is one way to do each thing. `load_graph` stays for graphs that are not image models. |
+| What is the user interface? | **Two classes.** `ModelBundle` (`from_path`, `from_zip`, `from_pretrained`, `write`, `write_zip`, `convert`) and `GraphInferenceModel.from_path`. They replace the functions `read_model_info`, `write_bundle`, `convert_bundle` and `inference_model_from_path`, so there is one way to do each thing. `load_graph` stays for graphs that are not image models. |
 | What is a `ModelBundle`? | **The description and the place of its files.** `ModelBundleInfo` was only the content of `model_info.json`. The place is not stored and not compared. The file is still named `model_info.json`, and Hafnia's `get_model_info()` returns the bundle. |
 | Folder or zip? | **Reading detects it** (`from_path`), with `from_zip` as the strict variant. **Writing is explicit**: `write` gives a folder, `write_zip` a zip. Functions with one output path (`convert`, the bundle helpers, `write_model`) still write a zip for a `.zip` path. |
 | How does a bundle become an inference model? | **`GraphInferenceModel.from_bundle(bundle)`**, with `from_path(path)` as the shorthand for a bundle on disk. A `ModelBundle` has no `load()`: that would be a second way, and the bundle definition would depend on the inference model. |
+| What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `write_zip`, `convert`, the bundle helpers of `model_exporters`, `TorchModelGraph.write` and `write_model`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
+| How is a pretrained model written by name? | **`ModelBundle.from_pretrained(name, path_bundle)`**, with `list_pretrained()` for the names. It replaces `create_pretrained_bundle` and `pretrained_model_names` of `model_exporters.registry`. Each model name is an entry point (`hafnia.inference_model_pretrained_models`) that is imported only when used, so a model only needs the dependencies of its own framework, `inference_model_core` stays torch free and another package adds its own models. Names are flat (`resnet18`), and a name registered by two packages is an error. The path is required: a cache folder can be added later. |
 | Does an inference model convert? | **No.** Converting works on files, not on a loaded graph with its device and parameter overrides. Convert the bundle, then load it. |
 
 **Definitions and a torch graph engine (2026-11-23):**

@@ -195,11 +195,11 @@ python scripts/benchmark.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip 
 
 ```python
 from inference_model_core import GraphInferenceModel, ModelBundle
-from model_exporters.registry import create_pretrained_bundle
 
 # Write a pretrained model as a bundle with a torch network, and convert it
-create_pretrained_bundle("ssdlite320_mobilenet_v3_large", "model_torch.zip")
-bundle = ModelBundle.from_path("model_torch.zip")  # A folder or a zip. 'from_zip' only takes a zip
+print(ModelBundle.list_pretrained())  # The names. A model only needs the dependencies of its own framework
+bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")  # Writes and returns it
+bundle = ModelBundle.from_path("model_torch.zip")  # Or read a bundle: a folder or a zip. 'from_zip' only takes a zip
 bundle_onnx = bundle.convert("onnx", "model_onnx.zip")  # Writes the new bundle and returns it
 bundle_onnx.convert("openvino", "model_openvino.zip")  # Or options={"precision": "fp16"}
 bundle_onnx.convert(

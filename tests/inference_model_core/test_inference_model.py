@@ -58,8 +58,9 @@ def test_params_and_write_model(tmp_path, dummy_network):
     model = GraphInferenceModel.from_path(path_bundle, params={"score_threshold": 0.5})
     assert [p.confidence for p in model.predict(random_image(32, 32))] == pytest.approx([0.9])
 
-    path_copy = model.write_model(tmp_path / "copy")
-    assert ModelBundle.from_path(path_copy) == ModelBundle.from_path(path_bundle)  # Overrides are not written
+    copy = model.write_model(tmp_path / "copy")
+    assert copy.path == tmp_path / "copy"
+    assert ModelBundle.from_path(copy.path) == ModelBundle.from_path(path_bundle)  # Overrides are not written
 
 
 def test_graph_needs_image_input_and_predictions_output(tmp_path, dummy_network):

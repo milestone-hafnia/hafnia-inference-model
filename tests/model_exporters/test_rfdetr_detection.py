@@ -151,10 +151,10 @@ def test_trainer_archive(rfdetr_torch, tmp_path, images):
         archive.writestr("model_config.json", json.dumps(config))
         archive.write(path_weights, arcname=path_weights.name)
 
-    path_bundle = create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle.zip")
-    info, pretrained_info = ModelBundle.from_path(path_bundle), ModelBundle.from_path(path_pretrained_bundle)
+    info = create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle.zip")
+    pretrained_info = ModelBundle.from_path(path_pretrained_bundle)
     assert info.tasks == pretrained_info.tasks
     assert info.graph.get_component("network").provenance["trainer_archive"] == "checkpoint.zip"
     expected = GraphInferenceModel.from_path(path_pretrained_bundle).predict(images[0])
-    predicted = GraphInferenceModel.from_path(path_bundle).predict(images[0])
+    predicted = GraphInferenceModel.from_bundle(info).predict(images[0])
     assert assert_detections_match(expected, predicted, min_score=0.05, min_iou=0.999, max_score_diff=1e-4) > 0

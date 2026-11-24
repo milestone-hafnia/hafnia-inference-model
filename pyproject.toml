@@ -56,6 +56,17 @@ dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
 "onnx_network/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
 "openvino_network/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
 
+# "<model name>": a function '(name, path_bundle, overwrite) -> ModelBundle' behind 'ModelBundle.from_pretrained'.
+# A model family is imported only when one of its models is asked for, so e.g. 'resnet18' doesn't need 'rfdetr'.
+[project.entry-points."hafnia.inference_model_pretrained_models"]
+"ssdlite320_mobilenet_v3_large" = "model_exporters.torchvision_detection:create_pretrained_torchvision_detection_bundle"
+"fasterrcnn_mobilenet_v3_large_320_fpn" = "model_exporters.torchvision_detection:create_pretrained_torchvision_detection_bundle"
+"resnet18" = "model_exporters.torchvision_classification:create_pretrained_torchvision_classification_bundle"
+"RFDETRNano" = "model_exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+"RFDETRSmall" = "model_exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+"RFDETRMedium" = "model_exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+"RFDETRLarge" = "model_exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

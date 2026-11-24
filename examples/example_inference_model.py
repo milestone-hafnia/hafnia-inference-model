@@ -21,6 +21,7 @@ Run from the repo root (needs all extras: 'uv sync --all-extras'):
 See 'example_compare_models.py' for several models and engines benchmarked side by side.
 """
 
+import time
 from pathlib import Path
 
 from hafnia.dataset.benchmark.benchmark import InferenceModel
@@ -31,11 +32,11 @@ from PIL import Image
 from rich import print as rprint
 
 from inference_model_core import GraphInferenceModel, ModelBundle
-from model_exporters.torchvision_detection import create_pretrained_torchvision_detection_bundle
 from package_openvino.metrics import run_benchmark
 
+t0 = time.time()
 ##### PREPARE EXAMPLE #####
-MODEL_NAME = "ssdlite320_mobilenet_v3_large"  # Or "fasterrcnn_mobilenet_v3_large_320_fpn"
+
 
 PATH_OUTPUT = Path(".data") / "examples" / "inference_model"
 
@@ -48,9 +49,12 @@ image = sample.read_image()
 
 # 1) Write a pretrained torchvision model as a model bundle (with a torch network) and convert it to an ONNX
 # bundle. This is the only step that needs torch.
-PATH_TORCH = PATH_OUTPUT / f"{MODEL_NAME}_torch.zip"
-PATH_TORCH = create_pretrained_torchvision_detection_bundle(MODEL_NAME, path_bundle=PATH_TORCH, overwrite=True)
-bundle_torch = ModelBundle.from_path(PATH_TORCH)
+MODEL_NAME = "ssdlite320_mobilenet_v3_large"  # Or "fasterrcnn_mobilenet_v3_large_320_fpn"
+bundle_torch = ModelBundle.from_pretrained(
+    MODEL_NAME,
+    path_bundle=PATH_OUTPUT / f"{MODEL_NAME}_torch.zip",
+    overwrite=True,
+)
 
 path_onnx = PATH_OUTPUT / f"{MODEL_NAME}_onnx.zip"
 bundle_onnx = bundle_torch.convert(target="onnx", path_bundle=path_onnx, overwrite=True)
@@ -86,3 +90,6 @@ rprint(f"5) Visualization saved to '{path_visualization}'")
 model_benchmark = GraphInferenceModel.from_path(path_openvino)
 metrics, dataset_predictions = run_benchmark(dataset=dataset, model=model_benchmark)
 rprint(f"6) Benchmark metrics: {metrics}")
+
+t1 = time.time()
+print(f"Total time: {t1 - t0:.2f}s")

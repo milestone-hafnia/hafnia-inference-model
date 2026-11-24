@@ -102,7 +102,7 @@ def load_trainer_archive(path_archive: Union[str, Path]) -> Tuple[nn.Module, Tas
 
 def create_pretrained_torchvision_classification_bundle(
     model_name: str, path_bundle: Union[str, Path], overwrite: bool = False
-) -> Path:
+) -> ModelBundle:
     model, task, image_size = load_pretrained_model(model_name)
     return create_torchvision_classification_bundle(
         model,
@@ -119,7 +119,7 @@ def create_pretrained_torchvision_classification_bundle(
 
 def create_trainer_archive_classification_bundle(
     path_archive: Union[str, Path], path_bundle: Union[str, Path], overwrite: bool = False
-) -> Path:
+) -> ModelBundle:
     model, task, image_size, model_name = load_trainer_archive(path_archive)
     return create_torchvision_classification_bundle(
         model,
@@ -144,8 +144,10 @@ def create_torchvision_classification_bundle(
     variant: Optional[str] = None,
     overwrite: bool = False,
     provenance: Optional[dict] = None,
-) -> Path:
+) -> ModelBundle:
     """Write a torchvision classification model as a model bundle with a torch network.
+
+    Returns the written bundle, so it can be converted or loaded without reading it again.
 
     Args:
         model: Classification model with one logit per class of 'task'. It is not modified.
@@ -205,8 +207,7 @@ def create_torchvision_classification_bundle(
     with tempfile.TemporaryDirectory(prefix="classification_bundle_") as tmp_dir:
         path_weights = Path(tmp_dir) / "weights.pth"
         torch.save(model.state_dict(), path_weights)
-        write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
-        return Path(path_bundle)
+        return write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
 
 
 def _architecture(model_name: str) -> Tuple[Callable[..., nn.Module], WeightsEnum]:

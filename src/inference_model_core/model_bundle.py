@@ -12,6 +12,12 @@ A 'ModelBundle' also knows where its files are, once it is read from or written 
     bundle.write("model_onnx")  # As a folder, 'write_zip' as a zip
     bundle_openvino = bundle.convert("openvino", "model_openvino.zip")
 
+A pretrained model is written as a bundle by name. The models are listed in the
+'hafnia.inference_model_pretrained_models' entry point group and imported only when used, so a model only needs
+the dependencies of its own framework:
+
+    bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")
+
 The bundle only describes the model. What a component type means (its parameters and ports) is its component
 definition ('inference_model_core.definition'), and how it is computed is up to the graph engine that runs the
 bundle. A conversion (e.g. ONNX -> OpenVINO) copies the description and only replaces the components it converts.
@@ -21,6 +27,7 @@ The extension lives here until the schema has settled and is then moved to hafni
 
 import contextlib
 import re
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Literal, Mapping, Optional, Sequence
 
@@ -41,6 +48,9 @@ from inference_model_core.bundle_io import (
 )
 
 MODEL_INFO_FORMAT_VERSION = "3.0.0"
+
+# "<model name>" -> a function '(name, path_bundle, overwrite) -> ModelBundle' that writes the pretrained model
+PRETRAINED_ENTRY_POINT_GROUP = "hafnia.inference_model_pretrained_models"
 
 Precision = Literal["fp32", "fp16", "int8"]
 
@@ -248,6 +258,41 @@ class ModelBundle(ModelInfo):
         if not is_zip_bundle(path_zip):
             raise ValueError(f"'{path_zip}' is not a zip file. Use 'from_path' for a bundle folder.")
         return cls.from_path(path_zip)
+
+    @classmethod
+    def list_pretrained(cls) -> List[str]:
+        """Names of the pretrained models 'from_pretrained' takes. Listing them imports nothing."""
+        return sorted({entry_point.name for entry_point in entry_points(group=PRETRAINED_ENTRY_POINT_GROUP)})
+
+    @classmethod
+    def from_pretrained(cls, name: str, path_bundle: PathLike, overwrite: bool = False) -> "ModelBundle":
+        """Write a pretrained model as a bundle and return the written bundle.
+
+        Unlike 'from_path' this creates the bundle: the weights are downloaded on first use and written to
+        'path_bundle'. The bundle has the network of the model's framework (e.g. a torch network), so creating,
+        loading and converting it need the dependencies of that framework, and only of that one.
+
+        Args:
+            name: Name of the pretrained model, see 'list_pretrained'.
+            path_bundle: Output bundle. A path ending with '.zip' creates a zip, otherwise a folder.
+            overwrite: Replace an existing output bundle.
+        """
+        matches = list(entry_points(group=PRETRAINED_ENTRY_POINT_GROUP, name=name))
+        if not matches:
+            raise ValueError(f"Unknown pretrained model '{name}'. Available: {cls.list_pretrained()}")
+        values = sorted({entry_point.value for entry_point in matches})
+        if len(values) > 1:
+            raise ValueError(f"Pretrained model '{name}' is registered more than once: {values}.")
+        try:
+            create = matches[0].load()
+        except ImportError as e:
+            raise ImportError(
+                f"Pretrained model '{name}' ('{values[0]}') can not be imported: {e}. Install its dependencies."
+            ) from e
+        bundle = create(name, path_bundle, overwrite=overwrite)
+        if not isinstance(bundle, ModelBundle):
+            raise TypeError(f"'{values[0]}' has to return the written 'ModelBundle', got '{type(bundle).__name__}'.")
+        return bundle
 
     def read_file(self, relative_path: str) -> bytes:
         """Read one file of the bundle, e.g. 'network/model.onnx', without extracting a zip bundle."""
