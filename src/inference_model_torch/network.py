@@ -17,10 +17,10 @@ from typing import Any, Dict, List, Mapping, Optional, TypeVar
 import numpy as np
 import torch
 
-from inference_model_core.bundle import FileSource
+from inference_model_core.bundle_io import FileSource
 from inference_model_core.definition import ComponentDefinition
 from inference_model_core.definitions.network import NetworkDefinition
-from inference_model_core.model_info import NetworkParams
+from inference_model_core.model_bundle import NetworkParams
 from inference_model_torch.component import ENGINE, Component, from_numpy, to_numpy
 
 N = TypeVar("N", bound=NetworkDefinition)

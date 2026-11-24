@@ -15,8 +15,10 @@ import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
 
-from inference_model_core import ComponentDefinition, ConversionInfo, GraphInfo, ModelBundleInfo, Port, write_bundle
+from inference_model_core import ComponentDefinition, ConversionInfo, GraphInfo, ModelBundle, Port
+from inference_model_core.bundle_io import FileSource
 from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_core.model_bundle import write_by_suffix
 from inference_model_torch import Component
 
 DUMMY_TYPE = "dummy_network"
@@ -76,12 +78,12 @@ class DummyNetworkOnOtherEngine(DummyNetwork):
     engine = "other"
 
 
-def make_model_info(
+def make_bundle(
     batched: bool = True,
     max_batch_size: Optional[int] = None,
     conversions: Optional[Dict[str, ConversionInfo]] = None,
     class_names: Optional[List[str]] = None,
-) -> ModelBundleInfo:
+) -> ModelBundle:
     """image -> letterbox to 32 x 32 -> tensor -> dummy network -> bounding boxes.
 
     The network detects label 0 and label 1 on every image: by default the classes 'car' and 'person'."""
@@ -108,7 +110,7 @@ def make_model_info(
             outputs={"predictions": "predictions"},
         ),
     ]
-    return ModelBundleInfo(
+    return ModelBundle(
         name="dummy-detector",
         framework="dummy",
         variant="tiny",
@@ -121,9 +123,10 @@ def make_model_info(
     )
 
 
-def write_dummy_bundle(path_bundle: Path, **model_info_kwargs: Any) -> Path:
-    files = {DUMMY_NETWORK_FILE: json.dumps(DUMMY_DETECTIONS).encode()}
-    return write_bundle(path_bundle, make_model_info(**model_info_kwargs), files)
+def write_dummy_bundle(path_bundle: Path, **bundle_kwargs: Any) -> Path:
+    files: Dict[str, FileSource] = {DUMMY_NETWORK_FILE: json.dumps(DUMMY_DETECTIONS).encode()}
+    write_by_suffix(make_bundle(**bundle_kwargs), path_bundle, files=files)
+    return path_bundle
 
 
 def network_of(model: Any) -> Any:

@@ -5,13 +5,13 @@ import subprocess
 import sys
 
 import pytest
-from helpers import make_model_info
+from helpers import make_bundle
 from pydantic import ValidationError
 
 from inference_model_core import ComponentDefinition, Port, Ports, TensorInfo
 from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, OnnxNetwork, ResizeImage
 
-MODEL_INFO = make_model_info()
+MODEL_INFO = make_bundle()
 
 
 class Scale(ComponentDefinition):

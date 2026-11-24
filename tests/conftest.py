@@ -44,12 +44,12 @@ def images(micro_coco) -> List[np.ndarray]:
 # (original model, categories or task, bundle path).
 def _convert(tmp_path_factory, source, target, **kwargs):
     """Convert the bundle of a fixture. Returns the fixture tuple with the converted bundle."""
-    from inference_model_core import convert_bundle
+    from inference_model_core import ModelBundle
 
     model, labels, path_source = source
     suffix = "_".join([target, *(str(value) for value in kwargs.get("options", {}).values())])
     path_bundle = tmp_path_factory.mktemp(target) / f"{path_source.stem.removesuffix('_torch')}_{suffix}.zip"
-    return model, labels, convert_bundle(path_source, path_bundle, target=target, **kwargs)
+    return model, labels, ModelBundle.from_path(path_source).convert(target, path_bundle, **kwargs).path
 
 
 def _torchvision_detection_bundle(tmp_path_factory, model_name):

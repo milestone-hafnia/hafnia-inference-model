@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import pytest
 import torch
 from hafnia.dataset.primitives import Bbox, Classification
-from helpers import make_model_info, random_image
+from helpers import make_bundle, random_image
 from PIL import Image
 
 from inference_model_core import ComponentDefinition, ImageTransform, Port
@@ -24,7 +24,7 @@ from inference_model_torch.component import unregister_component
 from inference_model_torch.components import TorchResizeImage
 from inference_model_torch.components.detection import select_anchor_detections, select_query_detections
 
-MODEL_INFO = make_model_info()  # Task 'object_detection' with the classes 'car' and 'person'
+MODEL_INFO = make_bundle()  # Task 'object_detection' with the classes 'car' and 'person'
 
 
 def load(definition: ComponentDefinition, inputs=None, outputs=None) -> Component:

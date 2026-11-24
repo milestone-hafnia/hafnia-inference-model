@@ -10,7 +10,7 @@ import pytest
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
 
-from inference_model_core import NetworkParams, convert_bundle, inference_model_from_path, read_model_info
+from inference_model_core import GraphInferenceModel, ModelBundle, NetworkParams
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
@@ -32,7 +32,7 @@ def torch_probabilities(model, image: np.ndarray, image_size: int) -> np.ndarray
 
 
 def test_model_info(resnet18_torch, resnet18):
-    torch_info, info = read_model_info(resnet18_torch[2]), read_model_info(resnet18[2])
+    torch_info, info = ModelBundle.from_path(resnet18_torch[2]), ModelBundle.from_path(resnet18[2])
     torch_network, network = torch_info.graph.get_component("network"), info.graph.get_component("network")
 
     assert [c.type for c in torch_info.graph.components] == [
@@ -56,7 +56,7 @@ def test_model_info(resnet18_torch, resnet18):
 def test_torch_bundle_matches_torch(resnet18_torch, images):
     """The torch network is rebuilt from the architecture name and the stored weights."""
     torch_model, _, path_bundle = resnet18_torch
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     for image in images:
         image_224 = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
         expected = torch_probabilities(torch_model, image_224, 224)
@@ -68,7 +68,7 @@ def test_torch_bundle_matches_torch(resnet18_torch, images):
 def test_matches_torch_without_resize(resnet18, images):
     """Images already at the model input size: resizing is an identity on both sides."""
     torch_model, _, path_bundle = resnet18
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     for image in images:
         image_224 = cv2.resize(image, (224, 224), interpolation=cv2.INTER_AREA)
         expected = torch_probabilities(torch_model, image_224, 224)
@@ -80,7 +80,7 @@ def test_matches_torch_without_resize(resnet18, images):
 def test_matches_torch_on_original_images(resnet18, images):
     """Our antialiased resize runs on uint8 pixels, torchvision's on floats: probabilities differ slightly."""
     torch_model, _, path_bundle = resnet18
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     for image in images:
         expected = torch_probabilities(torch_model, image, 224)
         (prediction,) = model.predict(image)
@@ -102,16 +102,16 @@ def test_trainer_archive(tmp_path, images):
         archive.write(path_weights, arcname="resnet18.pth")
 
     path_torch_bundle = create_bundle_from_trainer_archive(path_archive, tmp_path / "bundle_torch.zip")
-    torch_info = read_model_info(path_torch_bundle)
+    torch_info = ModelBundle.from_path(path_torch_bundle)
     assert torch_info.tasks[0].get_class_names() == ["cat", "dog", "car"]
     assert torch_info.graph.get_component("network").params["image_size"] == 64
     assert torch_info.graph.get_component("resize").params["height"] == 64
 
-    path_bundle = convert_bundle(path_torch_bundle, tmp_path / "bundle.zip", target="onnx")
-    network = read_model_info(path_bundle).graph.get_component("network")
+    path_bundle = ModelBundle.from_path(path_torch_bundle).convert("onnx", tmp_path / "bundle.zip").path
+    network = ModelBundle.from_path(path_bundle).graph.get_component("network")
     assert NetworkParams.model_validate(network.params).input_tensors[0].shape == [None, 3, 64, 64]
 
-    for model in (inference_model_from_path(path_torch_bundle), inference_model_from_path(path_bundle)):
+    for model in (GraphInferenceModel.from_path(path_torch_bundle), GraphInferenceModel.from_path(path_bundle)):
         for image in images:
             image_64 = cv2.resize(image, (64, 64), interpolation=cv2.INTER_AREA)
             expected = torch_probabilities(torch_model, image_64, 64)

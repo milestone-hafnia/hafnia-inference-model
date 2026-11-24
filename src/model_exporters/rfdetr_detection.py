@@ -32,9 +32,10 @@ from hafnia.dataset.primitives import Bbox
 from rfdetr import detr
 from rfdetr.util.coco_classes import COCO_CLASSES
 
-from inference_model_core import ConversionInfo, GraphInfo, ModelBundleInfo, NetworkParams, TensorInfo, write_bundle
+from inference_model_core import ConversionInfo, GraphInfo, ModelBundle, NetworkParams, TensorInfo
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
 from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, QueryTopK, ResizeImage
+from inference_model_core.model_bundle import write_by_suffix
 from inference_model_torch import register_component
 from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, onnx_options
@@ -227,7 +228,7 @@ def create_rfdetr_detection_bundle(
             outputs={"predictions": "predictions"},
         ),
     ]
-    model_info = ModelBundleInfo(
+    bundle = ModelBundle(
         name=name,
         framework=FRAMEWORK,
         variant=variant,
@@ -236,7 +237,8 @@ def create_rfdetr_detection_bundle(
     )
     with tempfile.TemporaryDirectory(prefix="rfdetr_bundle_") as tmp_dir:
         path_checkpoint = write_checkpoint(path_weights, Path(tmp_dir) / "weights.pth")
-        return write_bundle(path_bundle, model_info, files={WEIGHTS_FILE: path_checkpoint}, overwrite=overwrite)
+        write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_checkpoint}, overwrite=overwrite)
+        return Path(path_bundle)
 
 
 def write_checkpoint(path_source: Union[str, Path], path_checkpoint: Path) -> Path:

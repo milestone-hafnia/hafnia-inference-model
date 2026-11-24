@@ -1,4 +1,4 @@
-"""Generic conversion of model bundles: 'convert_bundle' and the registry of converters.
+"""Generic conversion of model bundles: the code behind 'ModelBundle.convert' and the registry of converters.
 
 A bundle is converted component by component. Each component lists in its 'conversions' the targets it supports
 (e.g. 'onnx', 'openvino', 'openvino_int8') with its export options. A converter turns a component of one type
@@ -19,10 +19,10 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Opt
 
 from hafnia.log import sys_logger
 
-from inference_model_core.bundle import MODEL_INFO_FILENAME, FileSource, PathLike, open_bundle, write_bundle
+from inference_model_core.bundle_io import FileSource, PathLike
 from inference_model_core.definitions.network import ONNX_NETWORK_TYPE, OPENVINO_NETWORK_TYPE
 from inference_model_core.graph import ModelGraph, load_graph
-from inference_model_core.model_info import ComponentInfo, GraphInfo, ModelBundleInfo
+from inference_model_core.model_bundle import ComponentInfo, GraphInfo, ModelBundle, write_by_suffix
 
 ENTRY_POINT_GROUP = "hafnia.inference_model_converters"
 
@@ -50,7 +50,7 @@ class ConversionRequest:
     """
 
     component: ComponentInfo
-    model_info: ModelBundleInfo
+    bundle: ModelBundle
     path_source_dir: Path  # Directory holding the files of 'component', at their bundle paths
     path_output_dir: Path
     target: str
@@ -115,39 +115,31 @@ def get_converter(source_type: str, target: str) -> Converter:
     return _CONVERTERS[key]
 
 
-def convert_bundle(
-    path_source_bundle: PathLike,
+def convert_model_bundle(
+    bundle: ModelBundle,
     path_bundle: PathLike,
     target: str,
     options: Optional[Mapping[str, Any]] = None,
     calibration_inputs: Optional[Sequence[Mapping[str, Any]]] = None,
     provenance: Optional[Mapping[str, Any]] = None,
     overwrite: bool = False,
-) -> Path:
-    """Convert every component of a bundle that supports 'target' and write the result as a new bundle.
+) -> ModelBundle:
+    """Convert every component of 'bundle' that supports 'target' and write the result as a new bundle.
 
-    Args:
-        path_source_bundle: Bundle to convert (zip or directory).
-        path_bundle: Output bundle. A path ending with '.zip' creates a zip bundle, otherwise a directory.
-        target: Conversion target, e.g. 'onnx', 'openvino' or 'openvino_int8'.
-        options: Options for the target that override the ones stored with the components, e.g.
-            '{"precision": "fp16"}' for 'openvino'. They don't apply to earlier steps of a conversion chain.
-        calibration_inputs: Graph inputs of representative samples (e.g. '[{"image": path}, ...]'), for targets
-            that calibrate (quantization). Each converted component is calibrated on what it gets at inference:
-            the samples are run through the source graph up to that component.
-        provenance: Extra provenance for the converted components, e.g. the calibration dataset.
-        overwrite: Replace an existing output bundle.
+    See 'ModelBundle.convert', which calls this, for the arguments.
     """
     if target not in TARGET_TYPES:
         raise ValueError(f"Unknown conversion target '{target}'. Targets: {sorted(TARGET_TYPES)}")
+    if bundle.path is None:
+        raise ValueError(f"Model bundle '{bundle.name}' is only in memory. Write it before converting it.")
+    path_source_bundle = bundle.path
 
-    with open_bundle(path_source_bundle) as path_source_dir, tempfile.TemporaryDirectory() as work_dir:
-        model_info = ModelBundleInfo.from_json_file(path_source_dir / MODEL_INFO_FILENAME)
-        chains = _conversion_chains(model_info, target, path_source_bundle)
+    with bundle.open_dir() as path_source_dir, tempfile.TemporaryDirectory() as work_dir:
+        chains = _conversion_chains(bundle, target, path_source_bundle)
 
         components: List[ComponentInfo] = []
         files: Dict[str, FileSource] = {}
-        for component in model_info.graph.components:
+        for component in bundle.graph.components:
             path_files_dir = path_source_dir
             for i_step, step_target in enumerate(chains.get(component.name, [])):
                 path_output_dir = Path(work_dir) / component.name / str(i_step)
@@ -155,7 +147,7 @@ def convert_bundle(
                 stored_options = component.conversions[step_target].options
                 request = ConversionRequest(
                     component=component,
-                    model_info=model_info,
+                    bundle=bundle,
                     path_source_dir=path_files_dir,
                     path_output_dir=path_output_dir,
                     target=step_target,
@@ -176,16 +168,16 @@ def convert_bundle(
             components.append(component)
             files.update({path: path_files_dir / path for path in component.files})
 
-        graph = GraphInfo(inputs=model_info.graph.inputs, outputs=model_info.graph.outputs, components=components)
-        converted_info = model_info.model_copy(update={"graph": graph})
-        return write_bundle(path_bundle, converted_info, files, overwrite=overwrite)
+        graph = GraphInfo(inputs=bundle.graph.inputs, outputs=bundle.graph.outputs, components=components)
+        converted_bundle = bundle.model_copy(update={"graph": graph})
+        return write_by_suffix(converted_bundle, path_bundle, files=files, overwrite=overwrite)
 
 
-def _conversion_chains(model_info: ModelBundleInfo, target: str, path_source_bundle: PathLike) -> Dict[str, List[str]]:
+def _conversion_chains(bundle: ModelBundle, target: str, path_source_bundle: PathLike) -> Dict[str, List[str]]:
     """Component name -> targets to convert it to, in order, for all components that support 'target'."""
     chains: Dict[str, List[str]] = {}
     not_convertible: List[str] = []
-    for component in model_info.graph.components:
+    for component in bundle.graph.components:
         conversion = component.conversions.get(target)
         if conversion is None:
             continue
@@ -205,7 +197,7 @@ def _conversion_chains(model_info: ModelBundleInfo, target: str, path_source_bun
         sys_logger.warning(f"Not converting to '{target}': component {reason}")
     if not chains:
         details = " ".join(f"Component {reason}." for reason in not_convertible)
-        supported = {c.name: sorted(c.conversions) for c in model_info.graph.components if c.conversions}
+        supported = {c.name: sorted(c.conversions) for c in bundle.graph.components if c.conversions}
         raise ValueError(
             f"No component of '{path_source_bundle}' can be converted to '{target}'. {details} "
             f"Conversions listed by the components: {supported}"

@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import Field
 
 from inference_model_core.definition import ComponentDefinition, Port
-from inference_model_core.model_info import ComponentInfo
+from inference_model_core.model_bundle import ComponentInfo
 
 _DETECTION_OUTPUTS = (
     Port("boxes", "(K, 4) xyxy boxes in pixels, by decreasing score"),

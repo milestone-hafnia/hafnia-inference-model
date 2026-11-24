@@ -2,6 +2,7 @@
 
 Status: implemented. Designed and reviewed on 2026-11-18, redesigned on 2026-11-20 as a graph of
 components, and on 2026-11-23 split into component definitions and a torch graph engine (section 3).
+Since 2026-11-24 the user interface is the `ModelBundle` and `GraphInferenceModel` classes (3.5, 3.6).
 See [section 11](#11-decisions) for the decisions.
 Scope: the `package-openvino` trainer package, built locally next to `../hafnia`,
 `../trainer-object-detection` and `../trainer-classification`.
@@ -305,17 +306,18 @@ dataset, one image per call, same ONNX or torch network in both):
   the GPU than they were in NumPy on the CPU. Keeping tensors on the GPU pays off for larger images
   and batches, which were not measured.
 
-### 3.5 Loading: `inference_model_from_path()`
+### 3.5 Loading: `GraphInferenceModel.from_path()`
 
 ```python
-model = inference_model_from_path("ssdlite320_onnx.zip")  # default implementations
-model = inference_model_from_path("ssdlite320_onnx.zip", inference_engine="openvino")  # ONNX network on OpenVINO
-model = inference_model_from_path("ssdlite320_onnx.zip", params={"score_threshold": 0.5}, device="CPU")
+model = GraphInferenceModel.from_path("ssdlite320_onnx.zip")  # default implementations
+model = GraphInferenceModel.from_path("ssdlite320_onnx.zip", inference_engine="openvino")  # ONNX network on OpenVINO
+model = GraphInferenceModel.from_path("ssdlite320_onnx.zip", params={"score_threshold": 0.5}, device="CPU")
 primitives = model.predict(image)
 ```
 
 There is **one** inference model class for all bundles, `GraphInferenceModel`. It feeds the image
-as graph input `image` and returns the graph output `predictions`.
+as graph input `image` and returns the graph output `predictions`. `from_path` takes a bundle
+folder or zip.
 
 Load-time settings, none of them stored in the bundle:
 
@@ -331,12 +333,26 @@ Load-time settings, none of them stored in the bundle:
 
 ### 3.6 Conversion
 
-A bundle is converted **component by component** with one generic function:
+A `ModelBundle` is the description in `model_info.json` plus the place of its files, once it is
+read or written:
 
 ```python
-convert_bundle(path_source, path_bundle, target="onnx")
-convert_bundle(path_source, path_bundle, target="openvino", options={"precision": "fp16"})
-convert_bundle(path_source, path_bundle, target="openvino_int8", calibration_inputs=[{"image": path}, ...])
+bundle = ModelBundle.from_path("model_torch.zip")  # A folder or a zip. 'from_zip' only takes a zip
+bundle.write("model_dir")  # Always a folder
+bundle.write_zip("model.zip")  # Always a zip
+```
+
+Reading only reads the model info and checks that the listed files are there. A bundle created in
+memory (by the bundle helpers) has no place yet and gets its files in `write(path, files=...)`.
+Two bundles are equal when their descriptions are, wherever their files are.
+
+A bundle is converted **component by component** with one generic method, which writes a new
+bundle and returns it:
+
+```python
+bundle_onnx = bundle.convert("onnx", "model_onnx.zip")
+bundle_onnx.convert("openvino", "model_fp16.zip", options={"precision": "fp16"})
+bundle_onnx.convert("openvino_int8", "model_int8.zip", calibration_inputs=[{"image": path}, ...])
 ```
 
 - Every component that lists the target in its `conversions` is converted. All others are copied
@@ -344,7 +360,7 @@ convert_bundle(path_source, path_bundle, target="openvino_int8", calibration_inp
 - **The bundle says what is possible and how.** `conversions` holds the component's export
   options per target: the ONNX opset and whether the batch axis is dynamic, or the graph nodes to
   keep in floating point when quantizing. `supported: false` with a `reason` marks a component that
-  can't be converted, e.g. to INT8. Options passed to `convert_bundle` override the stored ones.
+  can't be converted, e.g. to INT8. Options passed to `convert` override the stored ones.
 - **Converters** turn components of one type into a target, which gives a component of another
   type. They register with `@register_converter` and through the entry point group
   `hafnia.inference_model_converters` (`<source type>/<target>`):
@@ -388,7 +404,7 @@ class ComponentDefinition(BaseModel):  # definition.py
 
 
 class ModelGraph(Protocol):  # graph.py: what every graph engine provides
-    model_info: ModelBundleInfo
+    bundle: ModelBundle
     components: Sequence[Any]
 
     def run(self, inputs, outputs=None) -> Dict[str, Any]: ...  # one sample
@@ -409,15 +425,37 @@ def load_graph(
 
 
 class GraphInferenceModel(hafnia.InferenceModel):  # inference_model.py
+    @classmethod
+    def from_path(
+        cls,
+        path_bundle,
+        inference_engine=None,
+        params=None,
+        device="CPU",
+        num_threads=None,
+        engine_options=None,
+        graph_engine="torch",
+    ) -> "GraphInferenceModel": ...
     def predict(self, image, sample_dict=None) -> List[Primitive]: ...
     def predict_batch(self, images, sample_dicts=None) -> List[List[Primitive]]: ...
-    def get_model_info(self) -> ModelBundleInfo: ...
+    def get_model_info(self) -> ModelBundle: ...
     def write_model(self, path_bundle, overwrite=False) -> Path: ...
 
 
-def convert_bundle(
-    path_source_bundle, path_bundle, target, options=None, calibration_inputs=None, provenance=None, overwrite=False
-) -> Path: ...  # convert.py
+class ModelBundle(hafnia.ModelInfo):  # model_bundle.py: the content of model_info.json (section 5)
+    path: Optional[Path]  # folder or zip of the files, 'None' for a bundle in memory
+
+    @classmethod
+    def from_path(cls, path_bundle) -> "ModelBundle": ...  # folder or zip
+    @classmethod
+    def from_zip(cls, path_zip) -> "ModelBundle": ...  # zip only
+    def read_file(self, relative_path) -> bytes: ...
+    def open_dir(self) -> ContextManager[Path]: ...  # a folder with the files, extracted from a zip
+    def write(self, path_dir, files=None, overwrite=False) -> "ModelBundle": ...  # a folder
+    def write_zip(self, path_zip, files=None, overwrite=False) -> "ModelBundle": ...
+    def convert(
+        self, target, path_bundle, options=None, calibration_inputs=None, provenance=None, overwrite=False
+    ) -> "ModelBundle": ...  # code in convert.py
 
 
 Converter = Callable[[ConversionRequest], ComponentInfo]
@@ -458,7 +496,7 @@ class TorchModelGraph:                      # graph.py: implements ModelGraph
 
 ## 5. Model info schema
 
-Implemented as `ModelBundleInfo(ModelInfo)` in `src/inference_model_core/model_info.py`, format
+Implemented as `ModelBundle(ModelInfo)` in `src/inference_model_core/model_bundle.py`, format
 version `3.0.0`. A bundle of another major version is rejected with a message to create it again.
 
 ```python
@@ -486,7 +524,7 @@ class GraphInfo(BaseModel):
     components: List[ComponentInfo]  # in execution order
 
 
-class ModelBundleInfo(ModelInfo):  # hafnia's name, tasks, version, description, ...
+class ModelBundle(ModelInfo):  # hafnia's name, tasks, version, description, ...
     format_version: str = "3.0.0"
     framework: str  # where the model comes from: 'torchvision', 'rfdetr'
     variant: Optional[str] = None
@@ -547,7 +585,7 @@ is upstream in hafnia: let the metrics ignore prediction classes the ground trut
 
 ### Where should the change live?
 
-The extension lives in this package first (`ModelBundleInfo(ModelInfo)` in the core module) and
+The extension lives in this package first (`ModelBundle(ModelInfo)` in the core module) and
 goes upstream to `../hafnia` once it has settled. That avoids a Hafnia release for every schema
 iteration (Q5).
 
@@ -567,14 +605,14 @@ package-openvino/
 ├── docs/design.md            # this document (+ design_review.md, a review of the flavor design)
 ├── src/
 │   ├── inference_model_core/        # the bundle definition, no implementations → later: hafnia
-│   │   ├── model_info.py            #   ModelBundleInfo, GraphInfo, ComponentInfo, ConversionInfo
-│   │   ├── bundle.py                #   read/write zip|dir, model_info.json I/O
+│   │   ├── model_bundle.py          #   ModelBundle (read, write, convert), GraphInfo, ComponentInfo, ConversionInfo
+│   │   ├── bundle_io.py             #   internal: files of a zip or folder bundle
 │   │   ├── definition.py            #   ComponentDefinition (pydantic model + ports), Port
 │   │   ├── definitions/             #   standard definitions: image, detection, classification, network
 │   │   ├── transform.py             #   ImageTransform: the data item between resize and box mapping
 │   │   ├── graph.py                 #   ModelGraph (interface), load_graph, graph engine lookup
-│   │   ├── inference_model.py       #   GraphInferenceModel, inference_model_from_path
-│   │   └── convert.py               #   convert_bundle, converter registry
+│   │   ├── inference_model.py       #   GraphInferenceModel (from_path)
+│   │   └── convert.py               #   the code behind ModelBundle.convert, converter registry
 │   ├── inference_model_torch/       # the torch graph engine
 │   │   ├── component.py             #   Component (implementation base class), registry, load options
 │   │   ├── graph.py                 #   TorchModelGraph: load, write, run, run_batch
@@ -613,7 +651,7 @@ package-openvino/
     ├── helpers.py                   # dummy network (definition and implementation), detection matching
     ├── micro_datasets.py            # creates tests/data/micro-* from the Hafnia platform (8 COCO images)
     ├── data/micro-coco-2017/
-    ├── inference_model_core/        # test_model_info, test_definition, test_bundle, test_convert, test_inference_model
+    ├── inference_model_core/        # test_model_bundle, test_definition, test_bundle, test_convert, test_inference_model
     ├── inference_model_torch/       # test_graph, test_components, test_image, test_detection, test_classification
     ├── inference_model_onnxruntime/ # test_onnxruntime_components
     ├── inference_model_openvino/    # test_openvino_components (parity with ONNX Runtime), test_openvino_convert
@@ -645,10 +683,10 @@ Dependency rules:
 ```mermaid
 flowchart LR
     A[pretrained model or<br/>trainer archive] -->|bundle helper| T[torch bundle<br/>weights + model_info.json]
-    T -->|convert_bundle 'onnx'| B[ONNX bundle]
-    B -->|convert_bundle 'openvino'<br/>FP32 / FP16| D[OpenVINO bundle]
-    B -->|convert_bundle 'openvino_int8'<br/>+ calibration inputs| Q[OpenVINO INT8 bundle]
-    T -->|inference_model_from_path| M[GraphInferenceModel]
+    T -->|convert 'onnx'| B[ONNX bundle]
+    B -->|convert 'openvino'<br/>FP32 / FP16| D[OpenVINO bundle]
+    B -->|convert 'openvino_int8'<br/>+ calibration inputs| Q[OpenVINO INT8 bundle]
+    T -->|GraphInferenceModel.from_path| M[GraphInferenceModel]
     B --> M
     D --> M
     Q --> M
@@ -768,14 +806,14 @@ which matches training only when training resized.
 
 - Input: a checkpoint or `--model-path` trainer archive, otherwise a pretrained `--model-name`.
 - Writes the bundle with the torch network to a temporary folder (the bundle helper), converts it
-  with `convert_bundle(target="onnx", options={"opset_version": ...})` and writes the ONNX bundle
+  with `ModelBundle.convert("onnx", options={"opset_version": ...})` and writes the ONNX bundle
   to the experiment model folder. The bundle is loaded once to fail here, not downstream.
 
 ### 8.3 `scripts/export_onnx_to_openvino.py`
 
 - Input bundle from the checkpoint dir when present, otherwise `--model-path`.
   `--precision fp32|fp16|int8` (default fp32), `--device` for the verification run.
-- `fp32` / `fp16`: `convert_bundle(target="openvino", options={"precision": ...})`. Weights are
+- `fp32` / `fp16`: `ModelBundle.convert("openvino", options={"precision": ...})`. Weights are
   compressed to FP16 only when asked (design review 4.2). SSDLite320: `model.bin` is 13.8 MB in
   FP32 and 6.9 MB in FP16.
 - After conversion, the source and the converted bundle both run on OpenVINO with the same image,
@@ -783,7 +821,7 @@ which matches training only when training resized.
   In FP16, 0.16 px on boxes and 1e-3 on scores.
 - Not done yet: static-shape reshape (needed for NPU) and Model API `rt_info`.
 
-**INT8** (`--precision int8`): `convert_bundle(target="openvino_int8", calibration_inputs=...)`,
+**INT8** (`--precision int8`): `ModelBundle.convert("openvino_int8", calibration_inputs=...)`,
 NNCF post-training quantization of an FP32 ONNX or IR network.
 
 - Calibration data as in the trainers: the experiment's dataset on the platform, locally
@@ -841,7 +879,7 @@ NNCF post-training quantization of an FP32 ONNX or IR network.
 
 1. ✅ **Scaffold** `package-openvino` (pyproject, Dockerfile, `.hafniaignore`, `uv`), copied from
    the trainer-object-detection conventions.
-2. ✅ **Core**: model info schema, bundle I/O, base class, registry, `inference_model_from_path`.
+2. ✅ **Core**: model info schema, bundle I/O, base class, registry, `GraphInferenceModel.from_path`.
 3. ✅ **torchvision → ONNX** (SSDLite320 network only, Faster R-CNN MobileNetV3 320 full model) on
    ONNX Runtime + `scripts/export_to_onnx.py`. Parity against the original torch models: see 8.1.
 4. ✅ **OpenVINO** (loading both ONNX and IR bundles) + generic ONNX → OpenVINO conversion. See 8.3.
@@ -913,6 +951,15 @@ the redesign of 2026-11-20**: the scripts kept their arguments, and were run loc
 ---
 
 ## 11. Decisions
+
+**The `ModelBundle` interface (2026-11-24):**
+
+| Question | Decision |
+|---|---|
+| What is the user interface? | **Two classes.** `ModelBundle` (`from_path`, `from_zip`, `write`, `write_zip`, `convert`) and `GraphInferenceModel.from_path`. They replace the functions `read_model_info`, `write_bundle`, `convert_bundle` and `inference_model_from_path`, so there is one way to do each thing. `load_graph` stays for graphs that are not image models. |
+| What is a `ModelBundle`? | **The description and the place of its files.** `ModelBundleInfo` was only the content of `model_info.json`. The place is not stored and not compared. The file is still named `model_info.json`, and Hafnia's `get_model_info()` returns the bundle. |
+| Folder or zip? | **Reading detects it** (`from_path`), with `from_zip` as the strict variant. **Writing is explicit**: `write` gives a folder, `write_zip` a zip. Functions with one output path (`convert`, the bundle helpers, `write_model`) still write a zip for a `.zip` path. |
+| Does an inference model convert? | **No.** Converting works on files, not on a loaded graph with its device and parameter overrides. Convert the bundle, then load it. |
 
 **Definitions and a torch graph engine (2026-11-23):**
 

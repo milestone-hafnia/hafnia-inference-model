@@ -9,7 +9,7 @@
 
 A model bundle is a zip with the model files and a 'model_info.json' that describes the model: its tasks and
 a graph of components (e.g. resize -> to_tensor -> network -> nms -> to_bboxes) with their parameters.
-'inference_model_from_path' runs that graph, whatever the model family or the engine of the network, so steps
+'GraphInferenceModel.from_path' runs that graph, whatever the model family or the engine of the network, so steps
 2 and 4 are the same code. Converting a bundle replaces the network component and keeps the rest.
 Predictions are Hafnia primitives, here 'Bbox' with normalized coordinates.
 
@@ -29,7 +29,7 @@ from hafnia.dataset.image_visualizations import draw_annotations
 from PIL import Image
 from rich import print as rprint
 
-from inference_model_core import convert_bundle, inference_model_from_path, read_model_info
+from inference_model_core import GraphInferenceModel, ModelBundle
 from model_exporters.torchvision_detection import create_pretrained_torchvision_detection_bundle
 from package_openvino.metrics import run_benchmark
 
@@ -53,21 +53,20 @@ image = sample.read_image()
 # 1) Write a pretrained torchvision model as a model bundle (with a torch network) and convert it to an ONNX
 # bundle. This is the only step that needs torch.
 PATH_TORCH = create_pretrained_torchvision_detection_bundle(MODEL_NAME, path_bundle=PATH_TORCH, overwrite=True)
-PATH_ONNX = convert_bundle(PATH_TORCH, path_bundle=PATH_ONNX, target="onnx", overwrite=True)
-model_info = read_model_info(PATH_ONNX)
-rprint(f"1) Exported '{PATH_ONNX}'")
-rprint("   Graph: " + " -> ".join(f"{c.name} ({c.type})" for c in model_info.graph.components))
+bundle_onnx = ModelBundle.from_path(PATH_TORCH).convert("onnx", PATH_ONNX, overwrite=True)
+rprint(f"1) Exported '{bundle_onnx.path}'")
+rprint("   Graph: " + " -> ".join(f"{c.name} ({c.type})" for c in bundle_onnx.graph.components))
 
 # 2) Load the ONNX bundle from path and run inference with ONNX Runtime
-model_onnx: InferenceModel = inference_model_from_path(PATH_ONNX, params={"score_threshold": 0.6})
+model_onnx: InferenceModel = GraphInferenceModel.from_path(PATH_ONNX, params={"score_threshold": 0.6})
 predictions_onnx: list[Primitive] = model_onnx.predict(image)
 
 # 3) Convert the ONNX bundle to OpenVINO IR
-PATH_OPENVINO = convert_bundle(PATH_ONNX, path_bundle=PATH_OPENVINO, target="openvino", overwrite=True)
-rprint(f"3) Converted to '{PATH_OPENVINO}'")
+bundle_openvino = bundle_onnx.convert("openvino", PATH_OPENVINO, overwrite=True)
+rprint(f"3) Converted to '{bundle_openvino.path}'")
 
 # 4) Load the OpenVINO bundle from path and run inference with OpenVINO
-model_openvino: InferenceModel = inference_model_from_path(PATH_OPENVINO, params={"score_threshold": 0.3})
+model_openvino: InferenceModel = GraphInferenceModel.from_path(PATH_OPENVINO, params={"score_threshold": 0.3})
 predictions_openvino: list[Primitive] = model_openvino.predict(image)
 
 # 5) Model predictions are standardized with Hafnia primitives
@@ -79,6 +78,6 @@ rprint(f"5) Visualization saved to '{PATH_VISUALIZATION}'")
 # all samples, stores the predictions as a new task in a copy of the dataset and computes metrics against
 # the ground truth. Load the model with the bundle's default (low) score threshold, as metrics need all
 # detections, not only the confident ones.
-model_benchmark = inference_model_from_path(PATH_OPENVINO)
+model_benchmark = GraphInferenceModel.from_path(PATH_OPENVINO)
 metrics, dataset_predictions = run_benchmark(dataset=dataset, model=model_benchmark)
 rprint(f"6) Benchmark metrics: {metrics}")

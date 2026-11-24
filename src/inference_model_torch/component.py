@@ -33,9 +33,9 @@ from typing import Any, Callable, ClassVar, Dict, Generic, List, Mapping, Option
 import numpy as np
 import torch
 
-from inference_model_core.bundle import FileSource
+from inference_model_core.bundle_io import FileSource
 from inference_model_core.definition import ComponentDefinition
-from inference_model_core.model_info import ComponentInfo, ModelBundleInfo
+from inference_model_core.model_bundle import ComponentInfo, ModelBundle
 
 GRAPH_ENGINE = "torch"
 ENGINE = "torch"  # Inference engine of the components written in torch
@@ -61,7 +61,7 @@ class ComponentContext:
     """The place of a component in a loaded graph."""
 
     info: ComponentInfo  # Name, connections and files of the component
-    model_info: ModelBundleInfo
+    bundle: ModelBundle
     # Directory with the extracted bundle. It can be temporary: files have to be read in 'Component.setup'
     path_dir: Optional[Path] = None
     options: LoadOptions = field(default_factory=LoadOptions)
@@ -104,7 +104,7 @@ class Component(ABC, Generic[D]):
     def load(
         cls: Type[T],
         info: ComponentInfo,
-        model_info: ModelBundleInfo,
+        bundle: ModelBundle,
         path_dir: Optional[Path] = None,
         options: Optional[LoadOptions] = None,
         params: Optional[Mapping[str, Any]] = None,
@@ -113,14 +113,12 @@ class Component(ABC, Generic[D]):
 
         Args:
             info: Component info of the model info.
-            model_info: The model info.
+            bundle: The model bundle of the component.
             path_dir: Directory with the extracted bundle, for components with files.
             options: Load-time settings of the inference engines.
             params: Overrides of the parameters in 'info'.
         """
-        context = ComponentContext(
-            info=info, model_info=model_info, path_dir=path_dir, options=options or LoadOptions()
-        )
+        context = ComponentContext(info=info, bundle=bundle, path_dir=path_dir, options=options or LoadOptions())
         return cls(cls.definition.from_info(info, params), context)
 
     @classmethod

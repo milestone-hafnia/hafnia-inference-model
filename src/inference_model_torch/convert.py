@@ -22,7 +22,7 @@ def convert_torch_to_onnx(request: ConversionRequest) -> ComponentInfo:
     component_class = get_component_class(source.type)
     if not issubclass(component_class, TorchNetwork):
         raise TypeError(f"Component '{source.name}' ('{source.type}') is not a torch network and has no ONNX export.")
-    component = component_class.load(source, request.model_info, request.path_source_dir)
+    component = component_class.load(source, request.bundle, request.path_source_dir)
 
     path_file = f"{source.name}/{ONNX_MODEL_FILENAME}"
     path_onnx = request.path_output_dir / path_file

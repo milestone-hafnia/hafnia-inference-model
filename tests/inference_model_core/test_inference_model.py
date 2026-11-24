@@ -4,22 +4,22 @@ from hafnia.dataset.benchmark.inference_model import InferenceModel
 from hafnia.dataset.hafnia_dataset import HafniaDataset
 from hafnia.dataset.hafnia_dataset_types import DatasetInfo, Sample, TaskInfo
 from hafnia.dataset.primitives import Bbox
-from helpers import DUMMY_CLASS_NAMES, make_model_info, random_image, write_dummy_bundle
+from helpers import DUMMY_CLASS_NAMES, make_bundle, random_image, write_dummy_bundle
 from PIL import Image
 
-from inference_model_core import GraphInferenceModel, inference_model_from_path, load_graph, read_model_info
+from inference_model_core import GraphInferenceModel, ModelBundle, load_graph
 
 
-def test_inference_model_from_path(tmp_path, dummy_network):
+def test_graph_inference_model_from_path(tmp_path, dummy_network):
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
 
     assert isinstance(model, InferenceModel)  # One class for all bundles
-    assert model.get_model_info() == make_model_info()
+    assert model.get_model_info() == make_bundle()
 
 
 def test_predict_returns_primitives(tmp_path, dummy_network):
-    model = inference_model_from_path(write_dummy_bundle(tmp_path / "model.zip"))
+    model = GraphInferenceModel.from_path(write_dummy_bundle(tmp_path / "model.zip"))
     predictions = model.predict(random_image(32, 32))
 
     assert [p.class_name for p in predictions] == DUMMY_CLASS_NAMES
@@ -28,7 +28,7 @@ def test_predict_returns_primitives(tmp_path, dummy_network):
 
 
 def test_predict_batch(tmp_path, dummy_network):
-    model = inference_model_from_path(write_dummy_bundle(tmp_path / "model.zip"))
+    model = GraphInferenceModel.from_path(write_dummy_bundle(tmp_path / "model.zip"))
     images = [random_image(32, 32, seed=0), random_image(20, 40, seed=1), random_image(64, 16, seed=2)]
 
     assert model.predict_batch(images) == [model.predict(image) for image in images]
@@ -38,19 +38,19 @@ def test_predict_batch(tmp_path, dummy_network):
 
 def test_params_and_write_model(tmp_path, dummy_network):
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
-    model = inference_model_from_path(path_bundle, params={"score_threshold": 0.5})
+    model = GraphInferenceModel.from_path(path_bundle, params={"score_threshold": 0.5})
     assert [p.confidence for p in model.predict(random_image(32, 32))] == pytest.approx([0.9])
 
     path_copy = model.write_model(tmp_path / "copy")
-    assert read_model_info(path_copy) == read_model_info(path_bundle)  # Overrides are not written
+    assert ModelBundle.from_path(path_copy) == ModelBundle.from_path(path_bundle)  # Overrides are not written
 
 
 def test_graph_needs_image_input_and_predictions_output(tmp_path, dummy_network):
-    model_info = make_model_info()
-    graph_info = model_info.graph.model_copy(update={"outputs": ["boxes"]})
+    bundle = make_bundle()
+    graph_info = bundle.graph.model_copy(update={"outputs": ["boxes"]})
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
     graph = load_graph(path_bundle)
-    graph.model_info = model_info.model_copy(update={"graph": graph_info})
+    graph.bundle = bundle.model_copy(update={"graph": graph_info})
 
     with pytest.raises(ValueError, match="needs a graph with the input 'image' and an output 'predictions'"):
         GraphInferenceModel(graph)
@@ -66,7 +66,7 @@ def test_works_with_hafnia_benchmark(tmp_path, dummy_network):
     task = TaskInfo.from_class_names(primitive=Bbox, class_names=DUMMY_CLASS_NAMES, name="object_detection")
     dataset = HafniaDataset.from_samples_list(samples, info=DatasetInfo(dataset_name="dummy", tasks=[task]))
 
-    model = inference_model_from_path(write_dummy_bundle(tmp_path / "model.zip"))
+    model = GraphInferenceModel.from_path(write_dummy_bundle(tmp_path / "model.zip"))
     dataset_predictions = run_inference_on_dataset(dataset=dataset, model=model, batch_size=2)
 
     prediction_task = dataset_predictions.info.get_task_by_name("object_detection/predictions")

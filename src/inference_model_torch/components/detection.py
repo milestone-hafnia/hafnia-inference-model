@@ -52,7 +52,7 @@ class TorchQueryTopK(Component[QueryTopK]):
 @register_component
 class TorchDetectionsToBboxes(Component[DetectionsToBboxes]):
     def setup(self) -> None:
-        self.task = self.context.model_info.get_task_by_name(self.params.task_name)
+        self.task = self.context.bundle.get_task_by_name(self.params.task_name)
 
     def forward(
         self,

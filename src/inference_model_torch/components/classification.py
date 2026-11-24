@@ -44,7 +44,7 @@ def top1_classification(
 @register_component
 class TorchClassificationFromLogits(Component[ClassificationFromLogits]):
     def setup(self) -> None:
-        self.task = self.context.model_info.get_task_by_name(self.params.task_name)
+        self.task = self.context.bundle.get_task_by_name(self.params.task_name)
 
     def forward(self, logits: torch.Tensor) -> Dict[str, Any]:
         probabilities = logits.to(torch.float32).softmax(dim=-1)

@@ -14,8 +14,8 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
-from inference_model_core.bundle import PathLike
-from inference_model_core.model_info import ModelBundleInfo
+from inference_model_core.bundle_io import PathLike
+from inference_model_core.model_bundle import ModelBundle
 
 ENTRY_POINT_GROUP = "hafnia.inference_model_graph_engines"
 DEFAULT_GRAPH_ENGINE = "torch"
@@ -24,7 +24,7 @@ DEFAULT_GRAPH_ENGINE = "torch"
 class ModelGraph(Protocol):
     """A loaded model graph, as every graph engine provides it."""
 
-    model_info: ModelBundleInfo
+    bundle: ModelBundle
     components: Sequence[Any]  # The loaded component implementations of the graph engine, in graph order
 
     def run(self, inputs: Mapping[str, Any], outputs: Optional[Sequence[str]] = None) -> Dict[str, Any]:

@@ -13,13 +13,7 @@ import pytest
 from hafnia.dataset.primitives import Bbox
 from helpers import assert_detections_match, network_of
 
-from inference_model_core import (
-    NetworkParams,
-    convert_bundle,
-    inference_model_from_path,
-    read_bundle_file,
-    read_model_info,
-)
+from inference_model_core import GraphInferenceModel, ModelBundle, NetworkParams
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
@@ -60,7 +54,7 @@ def score_threshold(model) -> float:
 
 
 def test_torch_bundle_model_info(ssd_torch, frcnn_torch, micro_coco):
-    ssd_info, frcnn_info = read_model_info(ssd_torch[2]), read_model_info(frcnn_torch[2])
+    ssd_info, frcnn_info = ModelBundle.from_path(ssd_torch[2]), ModelBundle.from_path(frcnn_torch[2])
     coco_class_names = micro_coco.info.get_task_by_name("object_detection").get_class_names()
 
     for info in (ssd_info, frcnn_info):
@@ -97,7 +91,11 @@ def test_torch_bundle_model_info(ssd_torch, frcnn_torch, micro_coco):
 
 
 def test_onnx_bundle_model_info(ssd_torch, ssd, frcnn):
-    torch_info, ssd_info, frcnn_info = read_model_info(ssd_torch[2]), read_model_info(ssd[2]), read_model_info(frcnn[2])
+    torch_info, ssd_info, frcnn_info = (
+        ModelBundle.from_path(ssd_torch[2]),
+        ModelBundle.from_path(ssd[2]),
+        ModelBundle.from_path(frcnn[2]),
+    )
     ssd_network, frcnn_network = ssd_info.graph.get_component("network"), frcnn_info.graph.get_component("network")
 
     for network in (ssd_network, frcnn_network):
@@ -118,7 +116,7 @@ def test_onnx_bundle_model_info(ssd_torch, ssd, frcnn):
     # Nodes kept in floating point when quantizing: every pattern must match a node, or it no longer protects
     # the graph part it names
     for network, path_bundle in ((ssd_network, ssd[2]), (frcnn_network, frcnn[2])):
-        graph = onnx.load_from_string(read_bundle_file(path_bundle, network.files[0])).graph
+        graph = onnx.load_from_string(ModelBundle.from_path(path_bundle).read_file(network.files[0])).graph
         node_names = [node.name for node in graph.node]
         patterns = network.conversions["openvino_int8"].options["ignored_node_patterns"]
         assert patterns
@@ -131,7 +129,7 @@ def test_torch_bundles_match_the_original_models(ssd_torch, frcnn_torch, images)
     batch norm, as the pretrained model). It runs in the same graph as the processing components."""
     ssd_model, ssd_categories, path_ssd = ssd_torch
     frcnn_model, frcnn_categories, path_frcnn = frcnn_torch
-    ssd_bundle, frcnn_bundle = inference_model_from_path(path_ssd), inference_model_from_path(path_frcnn)
+    ssd_bundle, frcnn_bundle = GraphInferenceModel.from_path(path_ssd), GraphInferenceModel.from_path(path_frcnn)
     for model in (ssd_bundle, frcnn_bundle):
         assert {type(component).engine for component in model.graph.components} == {"torch"}
 
@@ -155,26 +153,30 @@ def test_torch_bundles_match_the_original_models(ssd_torch, frcnn_torch, images)
 def test_onnx_export_options(ssd_torch, frcnn_torch, images, tmp_path):
     """The stored ONNX options can be overridden per conversion. Without a dynamic batch axis the network takes
     one image per call, and the graph feeds a batch image by image."""
-    path_bundle = convert_bundle(ssd_torch[2], tmp_path / "static.zip", target="onnx", options={"dynamic_batch": False})
-    network = read_model_info(path_bundle).graph.get_component("network")
+    path_bundle = (
+        ModelBundle.from_path(ssd_torch[2])
+        .convert("onnx", tmp_path / "static.zip", options={"dynamic_batch": False})
+        .path
+    )
+    network = ModelBundle.from_path(path_bundle).graph.get_component("network")
     assert NetworkParams.model_validate(network.params).input_tensors[0].shape == [1, 3, 320, 320]
     assert network.provenance["conversion"]["options"] == {"opset_version": 17, "dynamic_batch": False}
 
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     assert network_of(model).max_batch_size == 1
     assert model.predict_batch(images[:3]) == [model.predict(image) for image in images[:3]]
 
     with pytest.raises(ValueError, match=r"Unknown ONNX export options \['opset'\]"):
-        convert_bundle(ssd_torch[2], tmp_path / "other.zip", target="onnx", options={"opset": 17})
+        ModelBundle.from_path(ssd_torch[2]).convert("onnx", tmp_path / "other.zip", options={"opset": 17})
     with pytest.raises(ValueError, match=r"Unknown ONNX export options \['dynamic_batch'\]"):
-        convert_bundle(frcnn_torch[2], tmp_path / "other.zip", target="onnx", options={"dynamic_batch": True})
+        ModelBundle.from_path(frcnn_torch[2]).convert("onnx", tmp_path / "other.zip", options={"dynamic_batch": True})
 
 
 def test_ssd_matches_torch_without_resize(ssd, images):
     """With an image already at the model input size, resizing is an identity on both sides, so the only
     differences are numerical (ONNX Runtime vs torch, the bundle's vs the model's postprocessing)."""
     torch_model, categories, path_bundle = ssd
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     for image in images:
         image_320 = cv2.resize(image, (320, 320), interpolation=cv2.INTER_LINEAR)
         n_checked = assert_detections_match(
@@ -190,7 +192,7 @@ def test_ssd_matches_torch_without_resize(ssd, images):
 def test_ssd_matches_torch_on_original_images(ssd, images):
     """Resizing in the 'resize' component (OpenCV on uint8) differs slightly from torchvision's resize of floats."""
     torch_model, categories, path_bundle = ssd
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     n_checked = sum(
         assert_detections_match(
             reference=torch_detections(torch_model, categories, image),
@@ -208,7 +210,7 @@ def test_frcnn_matches_torch(frcnn, images):
     """Same detections as the original model in both directions (nothing missing, nothing extra). Same input
     size on both sides, so differences are numerical only."""
     torch_model, categories, path_bundle = frcnn
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     settings = {"min_score": score_threshold(model), "min_iou": 0.99, "max_score_diff": 1e-3}
     for image in images:
         reference, predicted = torch_detections(torch_model, categories, image), model.predict(image)
@@ -221,7 +223,7 @@ def test_frcnn_matches_torch_across_input_sizes(frcnn, images, height, width):
     """The in-graph resize must give the same size as torch. 400 x 640 scales by exactly 0.8, which the
     float32 size computation of the traced graph got wrong (see '_resize_image_export' in the torch component)."""
     torch_model, categories, path_bundle = frcnn
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     image = cv2.resize(images[0], (width, height), interpolation=cv2.INTER_LINEAR)
     reference, predicted = torch_detections(torch_model, categories, image), model.predict(image)
     settings = {"min_score": score_threshold(model), "min_iou": 0.99, "max_score_diff": 1e-3}
@@ -238,7 +240,7 @@ def test_frcnn_images_without_proposals(frcnn, fill_value):
         image = np.random.default_rng(0).integers(0, 256, size=(480, 640, 3), dtype=np.uint8)
     else:
         image = np.full((300, 400, 3), fill_value, dtype=np.uint8)
-    model = inference_model_from_path(path_bundle)
+    model = GraphInferenceModel.from_path(path_bundle)
     raw_outputs = model.graph.run({"image": image}, outputs=["boxes", "scores", "labels"])
 
     assert torch_detections(torch_model, categories, image) == []

@@ -13,22 +13,22 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Type
 
 import torch
 
-from inference_model_core.bundle import MODEL_INFO_FILENAME, FileSource, PathLike, open_bundle, write_bundle
-from inference_model_core.model_info import ComponentInfo, ModelBundleInfo
+from inference_model_core.bundle_io import FileSource, PathLike
+from inference_model_core.model_bundle import ComponentInfo, ModelBundle, write_by_suffix
 from inference_model_torch.component import Component, LoadOptions, find_alternative_class, get_component_class
 
 
 class TorchModelGraph:
-    def __init__(self, model_info: ModelBundleInfo, components: Sequence[Component]):
+    def __init__(self, bundle: ModelBundle, components: Sequence[Component]):
         """
         Args:
-            model_info: Model info of the bundle.
+            bundle: The model bundle the components are loaded from.
             components: Loaded components in graph order. A subset of the graph's components when the graph
                 was loaded for some outputs only (see 'load').
         """
-        self.model_info = model_info
+        self.bundle = bundle
         self.components = list(components)
-        graph_order = [info.name for info in model_info.graph.components]
+        graph_order = [info.name for info in bundle.graph.components]
         loaded_order = [component.info.name for component in self.components]
         if loaded_order != [name for name in graph_order if name in set(loaded_order)]:
             raise ValueError(f"Components {loaded_order} are not in the order of the graph {graph_order}.")
@@ -45,7 +45,7 @@ class TorchModelGraph:
         engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
         outputs: Optional[Sequence[str]] = None,
     ) -> "TorchModelGraph":
-        """Load a model bundle (zip or directory). See 'inference_model_core.load_graph' for the arguments.
+        """Load a model bundle (folder or zip). See 'inference_model_core.load_graph' for the arguments.
 
         'device' is 'CPU', 'CUDA' or a torch device name for the components written in torch. Device names of
         another inference engine (e.g. OpenVINO's 'GPU') only apply to that engine: torch then uses the CPU.
@@ -54,9 +54,9 @@ class TorchModelGraph:
         options = LoadOptions(device=device, num_threads=num_threads, engine_options=engine_options or {})
         if num_threads is not None:
             torch.set_num_threads(num_threads)
-        with open_bundle(path_bundle) as path_dir:
-            model_info = ModelBundleInfo.from_json_file(path_dir / MODEL_INFO_FILENAME)
-            graph = model_info.graph
+        bundle = ModelBundle.from_path(path_bundle)
+        with bundle.open_dir() as path_dir:
+            graph = bundle.graph
             infos = graph.components_for(list(outputs)) if outputs is not None else graph.components
             classes = {info.name: _component_class(info, inference_engine) for info in infos}
             engines = {component_class.engine for component_class in classes.values()}
@@ -70,21 +70,22 @@ class TorchModelGraph:
                 raise ValueError(f"'engine_options' are given for engines {unknown_engines}, which run no component.")
             param_overrides = _split_param_overrides(infos, classes, params or {})
             components = [
-                classes[info.name].load(info, model_info, path_dir, options, params=param_overrides[info.name])
+                classes[info.name].load(info, bundle, path_dir, options, params=param_overrides[info.name])
                 for info in infos
             ]
-        return cls(model_info, components)
+        return cls(bundle, components)
 
     def write(self, path_bundle: PathLike, overwrite: bool = False) -> Path:
-        """Write the model as a bundle. A path ending with '.zip' creates a zip bundle, otherwise a directory."""
+        """Write the model as a bundle. A path ending with '.zip' creates a zip, otherwise a folder."""
         loaded = {component.info.name for component in self.components}
-        not_loaded = [info.name for info in self.model_info.graph.components if info.name not in loaded]
+        not_loaded = [info.name for info in self.bundle.graph.components if info.name not in loaded]
         if not_loaded:
             raise ValueError(f"Can't write a partially loaded graph. Components {not_loaded} are not loaded.")
         files: Dict[str, FileSource] = {}
         for component in self.components:
             files.update(component.files())
-        return write_bundle(path_bundle, self.model_info, files, overwrite=overwrite)
+        write_by_suffix(self.bundle, path_bundle, files=files, overwrite=overwrite)
+        return Path(path_bundle)
 
     # --- execution -----------------------------------------------------------------------------------
     def run(self, inputs: Mapping[str, Any], outputs: Optional[Sequence[str]] = None) -> Dict[str, Any]:
@@ -110,7 +111,7 @@ class TorchModelGraph:
         Returns:
             Output key -> one value per sample. Tensors are on the device of the component that produced them.
         """
-        graph = self.model_info.graph
+        graph = self.bundle.graph
         missing, unknown = sorted(set(graph.inputs) - set(inputs)), sorted(set(inputs) - set(graph.inputs))
         if missing or unknown:
             raise KeyError(f"The graph has inputs {graph.inputs}. Missing: {missing}, unknown: {unknown}.")

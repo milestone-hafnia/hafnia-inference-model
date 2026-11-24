@@ -33,7 +33,7 @@ flowchart LR
 - **Only the bundle crosses** to this package: no Python code and no dependencies. Loading a bundle never
   runs code from it.
 - **This package is fixed code**, the same for every model. It converts a bundle to OpenVINO and loads any
-  bundle as an `InferenceModel` with `inference_model_from_path()`. An `InferenceModel` takes an image and
+  bundle as an `InferenceModel` with `GraphInferenceModel.from_path()`. An `InferenceModel` takes an image and
   returns Hafnia primitives, so predicting, visualizing and benchmarking are shared by all models.
 
 Where the code is today: the export step for the two supported frameworks (torchvision and RF-DETR) is the
@@ -94,7 +94,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 | Package | Purpose |
 |---|---|
-| `inference_model_core` | The bundle definition: model info schema, model bundles (zip/dir), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), `convert_bundle`, and the interface of a loaded graph (`load_graph`, `GraphInferenceModel`, `inference_model_from_path`). No implementations, torch free. |
+| `inference_model_core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), and the interface of a loaded graph (`GraphInferenceModel`, `load_graph`). No implementations, torch free. |
 | `inference_model_torch` | The torch graph engine: `TorchModelGraph` (the executor), the implementations of the standard definitions in torch, the base classes of networks, and the converter torch → ONNX |
 | `inference_model_onnxruntime` | Runs `onnx_network` components on ONNX Runtime, inside the torch graph engine |
 | `inference_model_openvino` | Runs `openvino_network` (and on request `onnx_network`) components on OpenVINO, inside the torch graph engine. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
@@ -193,23 +193,28 @@ python scripts/benchmark.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip 
 ```
 
 ```python
-from inference_model_core import convert_bundle, inference_model_from_path, read_model_info
+from inference_model_core import GraphInferenceModel, ModelBundle
 from model_exporters.registry import create_pretrained_bundle
 
 # Write a pretrained model as a bundle with a torch network, and convert it
 create_pretrained_bundle("ssdlite320_mobilenet_v3_large", "model_torch.zip")
-convert_bundle("model_torch.zip", "model_onnx.zip", target="onnx")
-convert_bundle("model_onnx.zip", "model_openvino.zip", target="openvino")  # Or options={"precision": "fp16"}
-convert_bundle(
-    "model_onnx.zip",
+bundle = ModelBundle.from_path("model_torch.zip")  # A folder or a zip. 'from_zip' only takes a zip
+bundle_onnx = bundle.convert("onnx", "model_onnx.zip")  # Writes the new bundle and returns it
+bundle_onnx.convert("openvino", "model_openvino.zip")  # Or options={"precision": "fp16"}
+bundle_onnx.convert(
+    "openvino_int8",
     "model_int8.zip",
-    target="openvino_int8",
     calibration_inputs=[{"image": path} for path in calibration_image_paths],
 )
 
+# A bundle is the description in model_info.json plus the place of its files
+print(bundle_onnx.path, [f"{c.name} ({c.type})" for c in bundle_onnx.graph.components])
+bundle_onnx.write("model_onnx_dir")  # As a folder
+bundle_onnx.write_zip("model_onnx_copy.zip")  # As a zip
+
 # Run any bundle: the graph in model_info.json says how
-model = inference_model_from_path("model_onnx.zip")
-model = inference_model_from_path(
+model = GraphInferenceModel.from_path("model_onnx.zip")
+model = GraphInferenceModel.from_path(
     "model_onnx.zip",
     inference_engine="openvino",  # Optional: run the ONNX network on OpenVINO
     params={"score_threshold": 0.3},  # Optional: override component parameters ("nms.score_threshold" for one)
@@ -217,8 +222,7 @@ model = inference_model_from_path(
 )
 primitives = model.predict(image)  # List[Primitive], e.g. Bbox predictions
 
-# The graph and intermediate values (torch tensors)
-print([f"{c.name} ({c.type})" for c in read_model_info("model_onnx.zip").graph.components])
+# Intermediate values of the graph (torch tensors)
 network_outputs = model.graph.run({"image": image}, outputs=["anchor_boxes", "anchor_scores"])
 
 # A definition describes a component and connects it into a graph. It computes nothing itself

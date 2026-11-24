@@ -5,7 +5,7 @@ component is the model entry file ('model.onnx', 'model.xml').
 """
 
 from inference_model_core.definition import ComponentDefinition, Ports
-from inference_model_core.model_info import NetworkParams
+from inference_model_core.model_bundle import NetworkParams
 
 ONNX_NETWORK_TYPE = "onnx_network"
 OPENVINO_NETWORK_TYPE = "openvino_network"

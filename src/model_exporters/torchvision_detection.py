@@ -44,13 +44,13 @@ from inference_model_core import (
     ComponentInfo,
     ConversionInfo,
     GraphInfo,
-    ModelBundleInfo,
+    ModelBundle,
     NetworkParams,
     TensorInfo,
-    write_bundle,
 )
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
 from inference_model_core.definitions import AnchorNMS, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_core.model_bundle import write_by_suffix
 from inference_model_torch import register_component
 from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
@@ -155,7 +155,7 @@ def create_torchvision_detection_bundle(
     else:
         raise ValueError(f"Unsupported model type '{type(model).__name__}'. Supported: SSD, FasterRCNN.")
 
-    model_info = ModelBundleInfo(
+    bundle = ModelBundle(
         name=name,
         framework=FRAMEWORK,
         variant=variant,
@@ -165,7 +165,8 @@ def create_torchvision_detection_bundle(
     with tempfile.TemporaryDirectory(prefix="torchvision_bundle_") as tmp_dir:
         path_weights = Path(tmp_dir) / "weights.pth"
         torch.save(model.state_dict(), path_weights)
-        return write_bundle(path_bundle, model_info, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
+        write_by_suffix(bundle, path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
+        return Path(path_bundle)
 
 
 def _network_conversions(onnx_options: Dict[str, Any], int8_options: Dict[str, Any]) -> Dict[str, ConversionInfo]:

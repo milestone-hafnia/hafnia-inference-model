@@ -1,10 +1,10 @@
 import pytest
 from hafnia.dataset.hafnia_dataset_types import ModelInfo
 from hafnia.dataset.primitives import Bbox
-from helpers import make_model_info
+from helpers import make_bundle
 from pydantic import ValidationError
 
-from inference_model_core import ComponentInfo, GraphInfo, ModelBundleInfo
+from inference_model_core import ComponentInfo, GraphInfo, ModelBundle
 
 
 def component(name="step", inputs=None, outputs=None, **kwargs) -> ComponentInfo:
@@ -17,13 +17,10 @@ def component(name="step", inputs=None, outputs=None, **kwargs) -> ComponentInfo
     )
 
 
-def test_json_round_trip(tmp_path):
-    model_info = make_model_info()
-    path_json = tmp_path / "model_info.json"
-    model_info.write_json(path_json)
-
-    loaded = ModelBundleInfo.from_json_file(path_json)
-    assert loaded == model_info
+def test_json_round_trip():
+    bundle = make_bundle()
+    loaded = ModelBundle.model_validate_json(bundle.model_dump_json())
+    assert loaded == bundle
     assert loaded.tasks[0].primitive is Bbox
     assert isinstance(loaded, ModelInfo)  # Still a hafnia 'ModelInfo', so hafnia benchmark code accepts it
     assert loaded.all_files() == ["network/model.json"]
@@ -58,7 +55,7 @@ def test_invalid_graphs(components, match):
 
 
 def test_components_for_outputs():
-    graph = make_model_info().graph
+    graph = make_bundle().graph
     assert [c.name for c in graph.components_for(["predictions"])] == [c.name for c in graph.components]
     # The inputs of the network need neither the network nor what comes after it
     assert [c.name for c in graph.components_for(["input_tensor"])] == ["load_image", "resize", "to_tensor"]
@@ -69,12 +66,12 @@ def test_components_for_outputs():
 
 
 def test_other_format_versions_are_rejected():
-    data = make_model_info().model_dump()
+    data = make_bundle().model_dump()
     data["format_version"] = "2.0.0"
     with pytest.raises(ValidationError, match=r"Unsupported model info format version '2\.0\.0'"):
-        ModelBundleInfo.model_validate(data)
+        ModelBundle.model_validate(data)
 
     # A bundle of the flavor design ('runtime' instead of 'graph') gets the version error, not a list of fields
     with pytest.raises(ValidationError) as error:
-        ModelBundleInfo.model_validate({"format_version": "1.0.0", "name": "old", "tasks": [], "runtime": {}})
+        ModelBundle.model_validate({"format_version": "1.0.0", "name": "old", "tasks": [], "runtime": {}})
     assert error.value.error_count() == 1

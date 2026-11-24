@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from helpers import network_of
 
-from inference_model_core import NetworkParams, convert_bundle, inference_model_from_path, read_model_info
+from inference_model_core import GraphInferenceModel, ModelBundle, NetworkParams
 from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
@@ -29,9 +29,8 @@ IR_FILES = ["network/model.xml", "network/model.bin"]
 
 def quantize(path_source, path_bundle, images, **kwargs):
     calibration_inputs = [{"image": image} for image in images]
-    return convert_bundle(
-        path_source, path_bundle, target="openvino_int8", calibration_inputs=calibration_inputs, **kwargs
-    )
+    source = ModelBundle.from_path(path_source)
+    return source.convert("openvino_int8", path_bundle, calibration_inputs=calibration_inputs, **kwargs).path
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +44,7 @@ def frcnn_int8(frcnn, images, tmp_path_factory):
 
 
 def network_info(path_bundle):
-    network = read_model_info(path_bundle).graph.get_component("network")
+    network = ModelBundle.from_path(path_bundle).graph.get_component("network")
     return network, NetworkParams.model_validate(network.params)
 
 
@@ -56,12 +55,16 @@ def weights_size(path_bundle) -> int:
 
 def mean_average_precision(path_bundle, dataset) -> float:
     with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
-        metrics, _ = run_benchmark(dataset=dataset, model=inference_model_from_path(path_bundle))
+        metrics, _ = run_benchmark(dataset=dataset, model=GraphInferenceModel.from_path(path_bundle))
     return metrics["object_detection/mAP"]
 
 
 def test_ir_model_info(ssd, ssd_ir, ssd_ir_fp16):
-    onnx_info, ir_info, fp16_info = read_model_info(ssd[2]), read_model_info(ssd_ir), read_model_info(ssd_ir_fp16)
+    onnx_info, ir_info, fp16_info = (
+        ModelBundle.from_path(ssd[2]),
+        ModelBundle.from_path(ssd_ir),
+        ModelBundle.from_path(ssd_ir_fp16),
+    )
     (onnx_network, onnx_params), (ir_network, ir_params) = network_info(ssd[2]), network_info(ssd_ir)
     fp16_network, fp16_params = network_info(ssd_ir_fp16)
 
@@ -97,20 +100,20 @@ def test_ir_model_info(ssd, ssd_ir, ssd_ir_fp16):
 def test_conversions_that_are_not_possible(ssd, ssd_ir, ssd_ir_fp16, images, tmp_path):
     path_bundle = tmp_path / "bundle.zip"
     with pytest.raises(ValueError, match="can be converted to 'openvino'"):
-        convert_bundle(ssd_ir, path_bundle, target="openvino")  # Already OpenVINO IR
+        ModelBundle.from_path(ssd_ir).convert("openvino", path_bundle)  # Already OpenVINO IR
     with pytest.raises(ValueError, match="can be converted to 'openvino_int8'"):
         quantize(ssd_ir_fp16, path_bundle, images)  # Only FP32 networks are quantized
     with pytest.raises(ValueError, match="needs calibration inputs"):
-        convert_bundle(ssd[2], path_bundle, target="openvino_int8")
+        ModelBundle.from_path(ssd[2]).convert("openvino_int8", path_bundle)
     with pytest.raises(ValueError, match="'precision' must be 'fp32' or 'fp16'"):
-        convert_bundle(ssd[2], path_bundle, target="openvino", options={"precision": "int8"})
+        ModelBundle.from_path(ssd[2]).convert("openvino", path_bundle, options={"precision": "int8"})
     with pytest.raises(ValueError, match=r"Unknown options \['presets'\] for target 'openvino_int8'"):
         quantize(ssd[2], path_bundle, images, options={"presets": "mixed"})
     assert not path_bundle.exists()
 
 
 def test_int8_model_info(ssd, ssd_ir, ssd_int8, images):
-    onnx_info, int8_info = read_model_info(ssd[2]), read_model_info(ssd_int8)
+    onnx_info, int8_info = ModelBundle.from_path(ssd[2]), ModelBundle.from_path(ssd_int8)
     (onnx_network, _), (int8_network, int8_params) = network_info(ssd[2]), network_info(ssd_int8)
 
     assert (int8_network.type, int8_network.files, int8_params.precision) == ("openvino_network", IR_FILES, "int8")
@@ -138,13 +141,13 @@ def test_int8_accuracy_close_to_fp32(model_fixture, request, micro_coco):
     path_fp32 = request.getfixturevalue(f"{model_fixture}_ir")
     path_int8 = request.getfixturevalue(f"{model_fixture}_int8")
 
-    assert type(network_of(inference_model_from_path(path_int8))) is OpenVINOIRNetwork
+    assert type(network_of(GraphInferenceModel.from_path(path_int8))) is OpenVINOIRNetwork
     fp32_map, int8_map = mean_average_precision(path_fp32, micro_coco), mean_average_precision(path_int8, micro_coco)
     assert int8_map >= fp32_map - MAX_MAP_DROP, f"INT8 mAP {int8_map:.3f}, FP32 mAP {fp32_map:.3f}"
 
 
 def test_frcnn_int8_images_without_proposals(frcnn_int8):
-    model = inference_model_from_path(frcnn_int8)
+    model = GraphInferenceModel.from_path(frcnn_int8)
     assert model.predict(np.zeros((300, 400, 3), dtype=np.uint8)) == []
 
 
@@ -163,12 +166,12 @@ def test_quantize_openvino_ir_bundle(ssd_ir, images, tmp_path):
         "performance",
         2,
     )
-    assert inference_model_from_path(path_int8).predict(images[0])
+    assert GraphInferenceModel.from_path(path_int8).predict(images[0])
 
 
 def test_resnet18_int8_agrees_with_fp32(resnet18, resnet18_ir, images, tmp_path):
     path_int8 = quantize(resnet18[2], tmp_path / "resnet18_int8.zip", images)
-    fp32_model, int8_model = inference_model_from_path(resnet18_ir), inference_model_from_path(path_int8)
+    fp32_model, int8_model = GraphInferenceModel.from_path(resnet18_ir), GraphInferenceModel.from_path(path_int8)
     n_same = sum(fp32_model.predict(image)[0].class_idx == int8_model.predict(image)[0].class_idx for image in images)
     assert n_same >= len(images) - 2
 

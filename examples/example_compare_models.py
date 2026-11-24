@@ -2,7 +2,7 @@
 
 For each pretrained detection model, the example writes a model bundle with a torch network and converts it to
 ONNX and to OpenVINO IR in FP32, FP16 and INT8 (NNCF post-training quantization). Every bundle is then loaded
-with 'inference_model_from_path' and run through Hafnia's benchmark (accuracy) and a simple latency measurement:
+with 'GraphInferenceModel.from_path' and run through Hafnia's benchmark (accuracy) and a simple latency measurement:
 
     model                 network            engine
     SSDLite320            torch              PyTorch
@@ -37,7 +37,7 @@ from hafnia.utils import progress_bar
 from rich import print as rprint
 from rich.table import Table
 
-from inference_model_core import convert_bundle, inference_model_from_path
+from inference_model_core import GraphInferenceModel, ModelBundle
 from model_exporters.registry import create_pretrained_bundle
 from package_openvino.metrics import run_benchmark
 
@@ -63,11 +63,11 @@ def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dic
     path_fp16 = PATH_OUTPUT / f"{model_name}_openvino_fp16.zip"
     path_int8 = PATH_OUTPUT / f"{model_name}_openvino_int8.zip"
     create_pretrained_bundle(model_name, path_torch, overwrite=True)
-    convert_bundle(path_torch, path_onnx, target="onnx", overwrite=True)
-    convert_bundle(path_onnx, path_fp32, target="openvino", overwrite=True)
-    convert_bundle(path_onnx, path_fp16, target="openvino", options={"precision": "fp16"}, overwrite=True)
+    bundle_onnx = ModelBundle.from_path(path_torch).convert("onnx", path_onnx, overwrite=True)
+    bundle_onnx.convert("openvino", path_fp32, overwrite=True)
+    bundle_onnx.convert("openvino", path_fp16, options={"precision": "fp16"}, overwrite=True)
     calibration_inputs = [{"image": image} for image in calibration_images]
-    convert_bundle(path_onnx, path_int8, target="openvino_int8", calibration_inputs=calibration_inputs, overwrite=True)
+    bundle_onnx.convert("openvino_int8", path_int8, calibration_inputs=calibration_inputs, overwrite=True)
     return {
         "torch / PyTorch": (path_torch, None),
         "ONNX / ONNX Runtime": (path_onnx, None),
@@ -80,7 +80,7 @@ def export_bundles(model_name: str, calibration_images: List[np.ndarray]) -> Dic
 
 def median_latency_ms(path_bundle: Path, engine: Optional[str], images: List[np.ndarray], repeats: int = 5) -> float:
     """End-to-end latency of 'predict' (all components of the graph) for one image, on CPU."""
-    model = inference_model_from_path(path_bundle, inference_engine=engine, params=SERVING_PARAMS)
+    model = GraphInferenceModel.from_path(path_bundle, inference_engine=engine, params=SERVING_PARAMS)
     model.predict(images[0])  # Warm-up
     latencies = []
     for image in images * repeats:
@@ -111,7 +111,7 @@ for i_model_family, (model_label, model_name) in enumerate(MODELS.items()):
         total=len(bundle_runs),
     ):
         # Accuracy with the bundle's default (low) score threshold, as metrics need all detections
-        model = inference_model_from_path(path_bundle, inference_engine=engine)
+        model = GraphInferenceModel.from_path(path_bundle, inference_engine=engine)
         with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
             metrics, _ = run_benchmark(dataset=dataset, model=model)
 

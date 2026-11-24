@@ -7,13 +7,13 @@ from helpers import (
     DUMMY_NETWORK_FILE,
     DummyNetwork,
     DummyNetworkOnOtherEngine,
-    make_model_info,
+    make_bundle,
     random_image,
     write_dummy_bundle,
 )
 from pydantic import ValidationError
 
-from inference_model_core import GraphInfo, list_graph_engines, load_graph, write_bundle
+from inference_model_core import GraphInfo, list_graph_engines, load_graph
 from inference_model_torch import TorchModelGraph, register_component
 from inference_model_torch.component import unregister_component
 
@@ -129,7 +129,7 @@ def test_param_overrides(tmp_path, dummy_network):
         graph = load_graph(path_bundle, params=params)
         assert [p.confidence for p in graph.run({"image": IMAGES[0]})["predictions"]] == pytest.approx([0.9])
         # The model info, and so a written bundle, keeps the defaults
-        assert graph.model_info.graph.get_component("to_bboxes").params["score_threshold"] == 0.0
+        assert graph.bundle.graph.get_component("to_bboxes").params["score_threshold"] == 0.0
 
     for unknown in ("unknown_param", "resize.score_threshold", "nothing.score_threshold"):
         with pytest.raises(KeyError, match="No component parameter"):
@@ -152,7 +152,7 @@ def test_inference_engine_override_and_options(tmp_path, dummy_network):
         assert (options.device, options.num_threads, options.for_engine("other")) == ("GPU", 2, {"hint": 1})
         # 'GPU' is a device of another inference engine: the components written in torch use the CPU
         assert graph.run({"image": IMAGES[0]}, outputs=["input_tensor"])["input_tensor"].device.type == "cpu"
-        assert graph.model_info == make_model_info()  # The bundle is unchanged
+        assert graph.bundle == make_bundle()  # The bundle is unchanged
     finally:
         unregister_component(DummyNetworkOnOtherEngine)
 
@@ -182,20 +182,19 @@ def test_write_round_trip(tmp_path, dummy_network):
     copy = load_graph(path_copy)
 
     assert network(copy).detections == DUMMY_DETECTIONS
-    assert copy.model_info == graph.model_info
+    assert copy.bundle == graph.bundle
 
 
 def test_batched_components_need_equal_shapes(tmp_path, dummy_network):
     # Without the resize, the images reach the batched network with different sizes
-    model_info = make_model_info()
-    components = {component.name: component for component in model_info.graph.components}
+    bundle = make_bundle()
+    components = {component.name: component for component in bundle.graph.components}
     to_tensor = components["to_tensor"].model_copy(update={"inputs": {"image": "image_rgb"}})
     graph_info = GraphInfo(
         inputs=["image"], outputs=["boxes"], components=[components["load_image"], to_tensor, components["network"]]
     )
-    path_bundle = write_bundle(
-        tmp_path / "model.zip", model_info.model_copy(update={"graph": graph_info}), {DUMMY_NETWORK_FILE: b"{}"}
-    )
+    path_bundle = tmp_path / "model.zip"
+    bundle.model_copy(update={"graph": graph_info}).write_zip(path_bundle, files={DUMMY_NETWORK_FILE: b"{}"})
 
     with pytest.raises(ValueError, match="Can't batch input 'images' of component 'network'"):
         load_graph(path_bundle).run_batch({"image": IMAGES})

@@ -1,6 +1,6 @@
 """Choose the bundle helper for a pretrained model name or a trainer archive.
 
-The helpers write a model bundle with a torch network, the source format of a model. 'convert_bundle' turns it
+The helpers write a model bundle with a torch network, the source format of a model. 'ModelBundle.convert' turns it
 into an ONNX or OpenVINO bundle. Family modules are imported only when used, so e.g. a torchvision model doesn't
 need 'rfdetr'.
 """

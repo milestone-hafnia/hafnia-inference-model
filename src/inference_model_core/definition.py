@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Dict, List, Mapping, NamedTuple, Optional, Tup
 
 from pydantic import BaseModel, ConfigDict
 
-from inference_model_core.model_info import ComponentInfo, ConversionInfo
+from inference_model_core.model_bundle import ComponentInfo, ConversionInfo
 
 
 class Port(NamedTuple):
