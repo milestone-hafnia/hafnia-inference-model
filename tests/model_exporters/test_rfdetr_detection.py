@@ -60,14 +60,14 @@ def test_model_info(rfdetr_torch, rfdetr, micro_coco):
         "query_topk",
         "detections_to_bboxes",
     ]
-    assert (torch_network.runtime, torch_network.params) == ("torch", {"model_name": "RFDETRNano"})
+    assert (torch_network.type, torch_network.params) == ("rfdetr_network", {"model_name": "RFDETRNano"})
     assert info.framework == "rfdetr"
     # One class per logit column: COCO ids, with placeholders for id 0 and the unused ids. Same as torchvision's.
     class_names = info.tasks[0].get_class_names()
     assert len(class_names) == 91 and class_names[0] == "NotDefined_000"
     assert [name for name in class_names if not name.startswith("NotDefined_")] == coco_class_names
 
-    assert (network.type, network.runtime, network.batched) == ("network", "onnx", True)
+    assert (network.type, network.batched) == ("onnx_network", True)
     params = NetworkParams.model_validate(network.params)
     assert params.input_tensors[0].shape == [None, 3, RESOLUTION, RESOLUTION]
     assert [tensor.shape for tensor in params.output_tensors] == [[None, 300, 4], [None, 300, 91]]
@@ -92,7 +92,7 @@ def test_torch_bundle_matches_rfdetr(rfdetr_torch, images):
     itself uses, the scores are the same to 1e-5 (CPU against CUDA differs by 1e-3)."""
     torch_model, categories, path_bundle = rfdetr_torch
     model = inference_model_from_path(path_bundle, device=torch_model.model.device.type.upper())
-    assert {type(component).engine for component in model.graph.components} == {"torch", "numpy"}
+    assert {type(component).engine for component in model.graph.components} == {"torch"}
     settings = {"min_score": 0.2, "min_iou": 0.99, "max_score_diff": 1e-4}
     n_checked = 0
     for image in images:
@@ -105,7 +105,7 @@ def test_torch_bundle_matches_rfdetr(rfdetr_torch, images):
 
 def test_matches_rfdetr_without_resize(rfdetr, images):
     """Images already at the model input size: resizing is an identity on both sides, so the only differences
-    are numerical (ONNX Runtime vs torch, NumPy vs torch postprocessing). Checked in both directions.
+    are numerical (ONNX Runtime vs torch, the bundle's vs the model's postprocessing). Checked in both directions.
 
     Scores match to 1e-5. A few low-score boxes move a little (IoU down to 0.97 below score 0.2 on the micro
     dataset), so boxes are compared from score 0.2.

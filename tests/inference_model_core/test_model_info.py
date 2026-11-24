@@ -11,7 +11,6 @@ def component(name="step", inputs=None, outputs=None, **kwargs) -> ComponentInfo
     return ComponentInfo(
         name=name,
         type="dummy",
-        runtime="numpy",
         inputs={"x": "image"} if inputs is None else inputs,
         outputs={"y": "predictions"} if outputs is None else outputs,
         **kwargs,
@@ -71,8 +70,8 @@ def test_components_for_outputs():
 
 def test_other_format_versions_are_rejected():
     data = make_model_info().model_dump()
-    data["format_version"] = "1.0.0"
-    with pytest.raises(ValidationError, match=r"Unsupported model info format version '1\.0\.0'"):
+    data["format_version"] = "2.0.0"
+    with pytest.raises(ValidationError, match=r"Unsupported model info format version '2\.0\.0'"):
         ModelBundleInfo.model_validate(data)
 
     # A bundle of the flavor design ('runtime' instead of 'graph') gets the version error, not a list of fields

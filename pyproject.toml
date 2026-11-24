@@ -22,30 +22,39 @@ rfdetr = ["rfdetr==1.8.1"]  # RF-DETR bundles (model_exporters.rfdetr_detection)
 # in what it needs:
 # - "onnxruntime": inference_model_onnxruntime
 # - "openvino":    inference_model_openvino (openvino, nncf)
-# - "torch":       inference_model_torch, model_exporters (torch, torchvision, onnx)
+# - "torch":       inference_model_torch, the graph engine that runs every bundle (torch, torchvision), and
+#                  conversion to ONNX and model_exporters (onnx)
 # - "rfdetr":      model_exporters.rfdetr_detection (rfdetr)
 
 [dependency-groups]
 dev = ["mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]
 
-# Component implementations and converters of the packages in this repo. A separately installed package adds its
-# own to the same groups. They are imported only when a bundle needs them (see 'inference_model_core.component').
+# Graph engine, component implementations and converters of the packages in this repo. A separately installed
+# package adds its own to the same groups. They are imported only when a bundle needs them.
+[project.entry-points."hafnia.inference_model_graph_engines"]
+"torch" = "inference_model_torch.graph:TorchModelGraph"
+
+# Implementations of component definitions on the torch graph engine (see 'inference_model_torch.component').
+# The standard components ('inference_model_torch.components') need no entry.
 [project.entry-points."hafnia.inference_model_components"]
-# "<type>/<runtime>/<engine>"
-"network/onnx/onnxruntime" = "inference_model_onnxruntime.components:OnnxRuntimeNetwork"
-"network/onnx/openvino" = "inference_model_openvino.components:OpenVINOOnnxNetwork"
-"network/openvino/openvino" = "inference_model_openvino.components:OpenVINONetwork"
-"torchvision_classifier/torch/torch" = "model_exporters.torchvision_classification:TorchvisionClassifier"
-"torchvision_ssd_network/torch/torch" = "model_exporters.torchvision_detection:TorchvisionSSDNetwork"
-"torchvision_faster_rcnn/torch/torch" = "model_exporters.torchvision_detection:TorchvisionFasterRCNN"
-"rfdetr_network/torch/torch" = "model_exporters.rfdetr_detection:RFDETRNetwork"
+# "<type>": the default implementation of a component type. "<type>/<inference engine>": an alternative
+"onnx_network" = "inference_model_onnxruntime.components:OnnxRuntimeNetwork"
+"onnx_network/openvino" = "inference_model_openvino.components:OpenVINOOnnxNetwork"
+"openvino_network" = "inference_model_openvino.components:OpenVINOIRNetwork"
+"torchvision_classifier" = "model_exporters.torchvision_classification:TorchvisionClassifierModule"
+"torchvision_ssd_network" = "model_exporters.torchvision_detection:TorchvisionSSDModule"
+"torchvision_faster_rcnn" = "model_exporters.torchvision_detection:TorchvisionFasterRCNNModule"
+"rfdetr_network" = "model_exporters.rfdetr_detection:RFDETRModule"
 
 [project.entry-points."hafnia.inference_model_converters"]
-# "<source runtime>/<target>"
-"torch/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
-"onnx/openvino" = "inference_model_openvino.convert:convert_onnx_to_openvino"
-"onnx/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
-"openvino/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
+# "<source type>/<target>"
+"torchvision_classifier/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
+"torchvision_ssd_network/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
+"torchvision_faster_rcnn/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
+"rfdetr_network/onnx" = "inference_model_torch.convert:convert_torch_to_onnx"
+"onnx_network/openvino" = "inference_model_openvino.convert:convert_onnx_to_openvino"
+"onnx_network/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
+"openvino_network/openvino_int8" = "inference_model_openvino.convert:quantize_to_openvino_int8"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,10 +1,11 @@
-"""'convert_bundle' with made-up converters: dummy -> 'format_b' -> 'format_c'."""
+"""'convert_bundle' with made-up converters: 'dummy_network' -> target 'format_b' (type 'network_b') -> target
+'format_c' (type 'network_c')."""
 
 import json
 from typing import List
 
 import pytest
-from helpers import DUMMY_NETWORK_FILE, DUMMY_RUNTIME, random_image, write_dummy_bundle
+from helpers import DUMMY_NETWORK_FILE, DUMMY_TYPE, random_image, write_dummy_bundle
 
 from inference_model_core import (
     ComponentInfo,
@@ -29,19 +30,20 @@ def convert(request: ConversionRequest) -> ComponentInfo:
     (request.path_output_dir / request.component.name).mkdir()
     (request.path_output_dir / path_file).write_text(json.dumps({"source": json.loads(source)}))
     conversions = {name: info for name, info in request.component.conversions.items() if name != request.target}
+    converted_type = request.target.replace("format", "network")
     return request.component.model_copy(
-        update={"runtime": request.target, "files": [path_file], "conversions": conversions}
+        update={"type": converted_type, "files": [path_file], "conversions": conversions}
     )
 
 
 @pytest.fixture
 def converters():
-    register_converter(DUMMY_RUNTIME, "format_b", target_runtime="format_b")(convert)
-    register_converter("format_b", "format_c", target_runtime="format_c")(convert)
+    register_converter(DUMMY_TYPE, "format_b", target_type="network_b")(convert)
+    register_converter("network_b", "format_c", target_type="network_c")(convert)
     REQUESTS.clear()
     yield
-    unregister_converter(DUMMY_RUNTIME, "format_b")
-    unregister_converter("format_b", "format_c")
+    unregister_converter(DUMMY_TYPE, "format_b")
+    unregister_converter("network_b", "format_c")
 
 
 def conversions(**infos):
@@ -54,14 +56,14 @@ def test_convert_one_component(tmp_path, converters):
 
     source, converted = read_model_info(path_source).graph, read_model_info(path_bundle).graph
     network = converted.get_component("network")
-    assert (network.runtime, network.files, network.conversions) == ("format_b", ["network/model.format_b"], {})
+    assert (network.type, network.files, network.conversions) == ("network_b", ["network/model.format_b"], {})
     assert "source" in json.loads(read_bundle_file(path_bundle, "network/model.format_b"))
     # All other components are copied unchanged
     assert [c for c in converted.components if c.name != "network"] == [
         c for c in source.components if c.name != "network"
     ]
     assert REQUESTS[0].options == {"a": 1, "b": 2}  # Stored options, overridden and extended by the caller's
-    assert ("dummy", "format_b") in list_converters()
+    assert (DUMMY_TYPE, "format_b") in list_converters()
 
 
 def test_conversion_chain(tmp_path, converters):
@@ -71,7 +73,7 @@ def test_conversion_chain(tmp_path, converters):
     path_bundle = convert_bundle(path_source, tmp_path / "converted", target="format_c", options={"c": 3})
 
     network = read_model_info(path_bundle).graph.get_component("network")
-    assert (network.runtime, network.files) == ("format_c", ["network/model.format_c"])
+    assert (network.type, network.files) == ("network_c", ["network/model.format_c"])
     assert [(request.target, request.options) for request in REQUESTS] == [
         ("format_b", {"a": 1}),
         ("format_c", {"c": 3}),
@@ -84,7 +86,7 @@ def test_conversion_chain(tmp_path, converters):
 def test_chain_needs_every_step_to_be_supported(tmp_path, converters):
     # 'format_c' is reached through 'format_b', which this component does not list
     path_source = write_dummy_bundle(tmp_path / "model.zip", conversions=conversions(format_c={}))
-    with pytest.raises(ValueError, match=r"'network' \(runtime 'dummy'\) has no converter chain"):
+    with pytest.raises(ValueError, match=r"'network' \(type 'dummy_network'\) has no converter chain"):
         convert_bundle(path_source, tmp_path / "converted.zip", target="format_c")
 
 
@@ -124,7 +126,7 @@ def test_converters_must_keep_the_interface(tmp_path, converters):
             update={"outputs": {"boxes": "other", "scores": "scores", "labels": "labels"}}
         )
 
-    register_converter(DUMMY_RUNTIME, "format_b")(rename)
+    register_converter(DUMMY_TYPE, "format_b")(rename)
     path_source = write_dummy_bundle(tmp_path / "model.zip", conversions=conversions(format_b={}))
     with pytest.raises(ValueError, match="must keep the component's name and output keys"):
         convert_bundle(path_source, tmp_path / "converted.zip", target="format_b")

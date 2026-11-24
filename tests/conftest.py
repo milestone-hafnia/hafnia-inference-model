@@ -12,8 +12,8 @@ from hafnia.dataset.hafnia_dataset_types import Sample
 from helpers import DummyNetwork
 from micro_datasets import get_micro_dataset
 
-from inference_model_core import register_component
-from inference_model_core.component import unregister_component
+from inference_model_torch import register_component
+from inference_model_torch.component import unregister_component
 
 SSD_NAME = "ssdlite320_mobilenet_v3_large"
 FRCNN_NAME = "fasterrcnn_mobilenet_v3_large_320_fpn"
@@ -21,10 +21,11 @@ FRCNN_NAME = "fasterrcnn_mobilenet_v3_large_320_fpn"
 
 @pytest.fixture
 def dummy_network():
-    """Registers the dummy network component, so bundles of 'helpers.write_dummy_bundle' can be loaded."""
+    """Registers the implementation of the dummy network, so bundles of 'helpers.write_dummy_bundle' can be
+    loaded."""
     register_component(DummyNetwork)
     yield DummyNetwork
-    unregister_component(DummyNetwork.key())
+    unregister_component(DummyNetwork)
 
 
 @pytest.fixture(scope="session")

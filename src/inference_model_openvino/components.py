@@ -1,31 +1,29 @@
-"""OpenVINO: runs 'network' components stored as OpenVINO IR ('model.xml' + 'model.bin') or as ONNX files.
+"""OpenVINO: runs 'openvino_network' components (OpenVINO IR, 'model.xml' + 'model.bin') in the torch graph
+engine, and 'onnx_network' components when a graph is loaded with 'inference_engine="openvino"'.
 
 OpenVINO reads ONNX with its ONNX frontend, so the engine serves an ONNX network and its converted or quantized
 IR versions.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Mapping, Set, TypeVar
 
 import numpy as np
 import openvino as ov
-from pydantic import PrivateAttr
 
-from inference_model_core import register_component
-from inference_model_core.model_info import RUNTIME_ONNX, RUNTIME_OPENVINO
-from inference_model_core.network import NetworkComponent
+from inference_model_core.definitions import NetworkDefinition, OnnxNetwork, OpenVINONetwork
+from inference_model_torch import register_component
+from inference_model_torch.network import FileNetwork
 
 ENGINE = "openvino"
 PERFORMANCE_HINTS = ("LATENCY", "THROUGHPUT", "CUMULATIVE_THROUGHPUT")
 
 
-class _OpenVINONetwork(NetworkComponent):
-    engine = ENGINE
+N = TypeVar("N", bound=NetworkDefinition)
 
-    _compiled_model: ov.CompiledModel = PrivateAttr()
-    _infer_request: ov.InferRequest = PrivateAttr()
-    # A graph tensor can have several names: the port of each connected output, by the model info's name
-    _output_ports: Dict[str, ov.Output] = PrivateAttr()
+
+class _OpenVINONetwork(FileNetwork[N]):
+    engine = ENGINE
 
     def load_network(self, path_model: Path) -> None:
         """Options: 'device' is an OpenVINO device name (e.g. 'CPU', 'GPU', 'NPU', 'AUTO'), 'num_threads' the
@@ -52,24 +50,27 @@ class _OpenVINONetwork(NetworkComponent):
             _all_names(compiled_model.outputs),
             n_graph_inputs=len(compiled_model.inputs),
         )
-        self._output_ports = {name: _port_named(compiled_model.outputs, name) for name in self.output_names}
+        # A graph tensor can have several names: the port of each connected output, by the model info's name
+        self._output_ports: Dict[str, ov.Output] = {
+            name: _port_named(compiled_model.outputs, name) for name in self.output_names
+        }
         self._compiled_model = compiled_model
         self._infer_request = compiled_model.create_infer_request()
 
-    def forward(self, **tensors: Any) -> Dict[str, Any]:
+    def infer(self, arrays: Dict[str, np.ndarray]) -> Mapping[str, Any]:
         # 'share_outputs=False' (default) copies the outputs, so they stay valid after the next inference
-        results = self._infer_request.infer({name: np.asarray(value) for name, value in tensors.items()})
+        results = self._infer_request.infer(arrays)
         return {name: results[port] for name, port in self._output_ports.items()}
 
 
 @register_component
-class OpenVINONetwork(_OpenVINONetwork):
-    runtime = RUNTIME_OPENVINO
+class OpenVINOIRNetwork(_OpenVINONetwork[OpenVINONetwork]):
+    """The default implementation of networks stored as OpenVINO IR."""
 
 
-@register_component
-class OpenVINOOnnxNetwork(_OpenVINONetwork):
-    runtime = RUNTIME_ONNX
+@register_component(alternative=True)
+class OpenVINOOnnxNetwork(_OpenVINONetwork[OnnxNetwork]):
+    """ONNX networks on OpenVINO, for graphs loaded with 'inference_engine="openvino"'."""
 
 
 def _all_names(ports: List[ov.Output]) -> Set[str]:

@@ -5,8 +5,9 @@ name. The bundle is a graph of components:
 
     load_image -> resize -> to_tensor -> network -> to_classification
 
-The network is a torch component ('torchvision_classifier'): input '[N, 3, S, S]', output the class logits. It
-converts to ONNX with a dynamic batch axis, and from there to OpenVINO (see 'inference_model_core.convert').
+The network is a torch network ('torchvision_classifier', defined in 'model_exporters.definitions'): input
+'[N, 3, S, S]', output the class logits. It converts to ONNX with a dynamic batch axis, and from there to
+OpenVINO (see 'inference_model_core.convert').
 
 Preprocessing follows trainer-classification's training transform: resize to 'image_size' x 'image_size'
 (torchvision 'Resize', antialiased on tensors), scale to [0, 1], ImageNet mean/std.
@@ -15,30 +16,22 @@ Preprocessing follows trainer-classification's training transform: resize to 'im
 import copy
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
-import numpy as np
 import torch
 import torchvision
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
-from pydantic import Field
 from torch import nn
 from torchvision.models import ResNet18_Weights, WeightsEnum, resnet18
 
-from inference_model_core import (
-    ConversionInfo,
-    GraphInfo,
-    ModelBundleInfo,
-    NetworkParams,
-    TensorInfo,
-    register_component,
-    write_bundle,
-)
-from inference_model_core.components import ClassificationFromLogits, ImageToTensor, LoadImage, ResizeImage
+from inference_model_core import ConversionInfo, GraphInfo, ModelBundleInfo, NetworkParams, TensorInfo, write_bundle
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
-from inference_model_torch.component import OnnxExport, TorchNetworkComponent, load_state_dict_file
+from inference_model_core.definitions import ClassificationFromLogits, ImageToTensor, LoadImage, ResizeImage
+from inference_model_torch import register_component
+from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
+from model_exporters.definitions import TorchvisionClassifier
 from model_exporters.trainer_archive import open_trainer_archive
 
 FRAMEWORK = "torchvision"
@@ -54,34 +47,22 @@ ARCHITECTURES: Dict[str, Tuple[Callable[..., nn.Module], WeightsEnum]] = {
 }
 
 
-class Logits(NamedTuple):
-    logits: np.ndarray
-
-
 @register_component
-class TorchvisionClassifier(TorchNetworkComponent):
-    """A torchvision classification network: 'images' (N, 3, S, S) -> 'logits' (N, classes)."""
-
-    type = "torchvision_classifier"
-
-    architecture: str = Field(description=f"torchvision architecture. Options: {list(ARCHITECTURES)}")
-    num_classes: int = Field(gt=0)
-    image_size: int = Field(gt=0, description="Square input size the model was trained on")
-
+class TorchvisionClassifierModule(TorchNetwork[TorchvisionClassifier]):
     def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
-        builder, _ = _architecture(self.architecture)
-        model = builder(weights=None, num_classes=self.num_classes)
+        builder, _ = _architecture(self.params.architecture)
+        model = builder(weights=None, num_classes=self.params.num_classes)
         model.load_state_dict(load_state_dict_file(path_weights), strict=True)
         return model.to(device).eval()
 
-    def forward(self, images: np.ndarray) -> Logits:
-        return Logits(self.call_model(self._model, images))
+    def forward(self, images: torch.Tensor) -> Dict[str, Any]:
+        return {"logits": self.model(images)}
 
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
         options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
-        size, dynamic_batch = self.image_size, options["dynamic_batch"]
+        size, dynamic_batch = self.params.image_size, options["dynamic_batch"]
         onnx_export(
-            copy.deepcopy(self._model).cpu(),
+            copy.deepcopy(self.model).cpu(),
             (torch.zeros(2 if dynamic_batch else 1, 3, size, size),),
             path_onnx,
             input_names=["images"],
@@ -92,7 +73,7 @@ class TorchvisionClassifier(TorchNetworkComponent):
         batch = None if dynamic_batch else 1
         params = NetworkParams(
             input_tensors=[TensorInfo(name="images", shape=[batch, 3, size, size])],
-            output_tensors=[TensorInfo(name="logits", shape=[batch, self.num_classes])],
+            output_tensors=[TensorInfo(name="logits", shape=[batch, self.params.num_classes])],
         )
         return OnnxExport(params=params, batched=True)
 

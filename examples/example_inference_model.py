@@ -56,7 +56,7 @@ PATH_TORCH = create_pretrained_torchvision_detection_bundle(MODEL_NAME, path_bun
 PATH_ONNX = convert_bundle(PATH_TORCH, path_bundle=PATH_ONNX, target="onnx", overwrite=True)
 model_info = read_model_info(PATH_ONNX)
 rprint(f"1) Exported '{PATH_ONNX}'")
-rprint("   Graph: " + " -> ".join(f"{c.name} ({c.runtime})" for c in model_info.graph.components))
+rprint("   Graph: " + " -> ".join(f"{c.name} ({c.type})" for c in model_info.graph.components))
 
 # 2) Load the ONNX bundle from path and run inference with ONNX Runtime
 model_onnx: InferenceModel = inference_model_from_path(PATH_ONNX, params={"score_threshold": 0.6})

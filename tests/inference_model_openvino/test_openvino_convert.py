@@ -17,7 +17,7 @@ from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("nncf")
-from inference_model_openvino.components import OpenVINONetwork
+from inference_model_openvino.components import OpenVINOIRNetwork
 
 pytestmark = pytest.mark.slow
 
@@ -65,11 +65,11 @@ def test_ir_model_info(ssd, ssd_ir, ssd_ir_fp16):
     (onnx_network, onnx_params), (ir_network, ir_params) = network_info(ssd[2]), network_info(ssd_ir)
     fp16_network, fp16_params = network_info(ssd_ir_fp16)
 
-    assert (ir_network.type, ir_network.runtime, ir_network.files) == ("network", "openvino", IR_FILES)
+    assert (onnx_network.type, ir_network.type, ir_network.files) == ("onnx_network", "openvino_network", IR_FILES)
     assert (ir_params.precision, fp16_params.precision) == ("fp32", "fp16")
     assert ir_network.provenance["compress_to_fp16"] is False
     assert ir_network.provenance["parent"]["provenance"] == onnx_network.provenance
-    assert ir_network.provenance["parent"]["runtime"] == "onnx"
+    assert ir_network.provenance["parent"]["type"] == "onnx_network"
     # An FP32 IR can still be quantized, an FP16 IR can not be converted further
     assert (sorted(ir_network.conversions), fp16_network.conversions) == (["openvino_int8"], {})
     assert ir_network.conversions["openvino_int8"] == onnx_network.conversions["openvino_int8"]
@@ -113,7 +113,7 @@ def test_int8_model_info(ssd, ssd_ir, ssd_int8, images):
     onnx_info, int8_info = read_model_info(ssd[2]), read_model_info(ssd_int8)
     (onnx_network, _), (int8_network, int8_params) = network_info(ssd[2]), network_info(ssd_int8)
 
-    assert (int8_network.runtime, int8_network.files, int8_params.precision) == ("openvino", IR_FILES, "int8")
+    assert (int8_network.type, int8_network.files, int8_params.precision) == ("openvino_network", IR_FILES, "int8")
     assert int8_network.conversions == {}
     quantization = int8_network.provenance["quantization"]
     assert quantization["preset"] == "mixed"
@@ -138,7 +138,7 @@ def test_int8_accuracy_close_to_fp32(model_fixture, request, micro_coco):
     path_fp32 = request.getfixturevalue(f"{model_fixture}_ir")
     path_int8 = request.getfixturevalue(f"{model_fixture}_int8")
 
-    assert type(network_of(inference_model_from_path(path_int8))) is OpenVINONetwork
+    assert type(network_of(inference_model_from_path(path_int8))) is OpenVINOIRNetwork
     fp32_map, int8_map = mean_average_precision(path_fp32, micro_coco), mean_average_precision(path_int8, micro_coco)
     assert int8_map >= fp32_map - MAX_MAP_DROP, f"INT8 mAP {int8_map:.3f}, FP32 mAP {fp32_map:.3f}"
 
@@ -154,7 +154,7 @@ def test_quantize_openvino_ir_bundle(ssd_ir, images, tmp_path):
     path_int8 = quantize(ssd_ir, tmp_path / "from_ir.zip", images[:2], options=options, provenance=provenance)
     network, _ = network_info(path_int8)
 
-    assert network.provenance["parent"]["runtime"] == "openvino"
+    assert network.provenance["parent"]["type"] == "openvino_network"
     assert network.provenance["calibration_dataset"] == "micro-coco-2017"
     assert (
         network.provenance["quantization"]["preset"],

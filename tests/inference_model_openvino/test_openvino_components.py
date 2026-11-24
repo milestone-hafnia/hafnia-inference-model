@@ -1,7 +1,7 @@
 """The OpenVINO network components on ONNX and IR bundles, checked against ONNX Runtime.
 
 ONNX Runtime is the reference (it is checked against torch in 'tests/model_exporters'). Pre- and postprocessing
-are the same NumPy components on both engines, so differences come from the network.
+are the same components on both engines, so differences come from the network.
 """
 
 import math
@@ -10,14 +10,14 @@ import numpy as np
 import pytest
 from helpers import assert_detections_match, network_of
 
-from inference_model_core import ModelGraph, inference_model_from_path
+from inference_model_core import inference_model_from_path, load_graph
 from package_openvino.metrics import run_benchmark
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
 pytest.importorskip("openvino")
 from inference_model_onnxruntime.components import OnnxRuntimeNetwork
-from inference_model_openvino.components import OpenVINONetwork, OpenVINOOnnxNetwork
+from inference_model_openvino.components import OpenVINOIRNetwork, OpenVINOOnnxNetwork
 
 pytestmark = pytest.mark.slow
 
@@ -26,15 +26,15 @@ def test_engine_selection(ssd, ssd_ir, frcnn_ir):
     # ONNX networks run on OpenVINO through the engine override, IR networks always run on OpenVINO
     assert type(network_of(inference_model_from_path(ssd[2]))) is OnnxRuntimeNetwork
     assert type(network_of(inference_model_from_path(ssd[2], inference_engine="openvino"))) is OpenVINOOnnxNetwork
-    assert type(network_of(inference_model_from_path(ssd_ir))) is OpenVINONetwork
-    assert type(network_of(inference_model_from_path(frcnn_ir))) is OpenVINONetwork
-    with pytest.raises(ValueError, match=r"No component of .* runs on engine 'onnxruntime'"):
+    assert type(network_of(inference_model_from_path(ssd_ir))) is OpenVINOIRNetwork
+    assert type(network_of(inference_model_from_path(frcnn_ir))) is OpenVINOIRNetwork
+    with pytest.raises(ValueError, match=r"No component of .* runs on inference engine 'onnxruntime'"):
         inference_model_from_path(ssd_ir, inference_engine="onnxruntime")
 
 
 def test_ssd_network_outputs_match_onnxruntime(ssd, ssd_ir, images):
-    reference = ModelGraph.load(ssd[2])
-    graphs = [ModelGraph.load(ssd[2], inference_engine="openvino"), ModelGraph.load(ssd_ir)]
+    reference = load_graph(ssd[2])
+    graphs = [load_graph(ssd[2], inference_engine="openvino"), load_graph(ssd_ir)]
     keys = ["anchor_boxes", "anchor_scores"]
     for image in images:
         expected = reference.run({"image": image}, outputs=keys)
@@ -119,13 +119,11 @@ def test_hafnia_benchmark_on_micro_coco(ssd, ssd_ir, micro_coco):
 
 
 def test_classification_matches_onnxruntime(resnet18, resnet18_ir, images):
-    from inference_model_core.classification import softmax
-
     reference, model = inference_model_from_path(resnet18[2]), inference_model_from_path(resnet18_ir)
-    assert type(network_of(model)) is OpenVINONetwork
+    assert type(network_of(model)) is OpenVINOIRNetwork
     for image in images:
-        expected = softmax(reference.graph.run({"image": image}, outputs=["logits"])["logits"])
-        probabilities = softmax(model.graph.run({"image": image}, outputs=["logits"])["logits"])
+        expected = reference.graph.run({"image": image}, outputs=["logits"])["logits"].softmax(dim=-1)
+        probabilities = model.graph.run({"image": image}, outputs=["logits"])["logits"].softmax(dim=-1)
         np.testing.assert_allclose(probabilities, expected, atol=1e-4)
         assert model.predict(image)[0].class_idx == reference.predict(image)[0].class_idx
 
@@ -134,7 +132,7 @@ def test_rfdetr_matches_onnxruntime(rfdetr, rfdetr_ir, images):
     """OpenVINO differs from ONNX Runtime in low-score queries of RF-DETR's transformer (boxes moved by up to 0.4 of
     the image on the micro dataset), so only detections with score >= 0.1 are compared, in both directions."""
     reference, model = inference_model_from_path(rfdetr[2]), inference_model_from_path(rfdetr_ir)
-    assert type(network_of(model)) is OpenVINONetwork
+    assert type(network_of(model)) is OpenVINOIRNetwork
     settings = {"min_score": 0.1, "min_iou": 0.99, "max_score_diff": 1e-2}
     for image in images:
         expected, predicted = reference.predict(image), model.predict(image)

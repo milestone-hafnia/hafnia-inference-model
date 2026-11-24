@@ -1,7 +1,8 @@
 """Model bundles of torchvision detection models.
 
-The bundle is a graph of components with a torch network, which converts to ONNX and from there to OpenVINO (see
-'inference_model_core.convert'). Two kinds of networks (see docs/design.md):
+The bundle is a graph of components with a torch network (defined in 'model_exporters.definitions'), which
+converts to ONNX and from there to OpenVINO (see 'inference_model_core.convert'). Two kinds of networks (see
+docs/design.md):
 
 - SSD models (e.g. 'ssdlite320_mobilenet_v3_large') are the **network only** ('torchvision_ssd_network'): input
   '[N, 3, H, W]', output per-anchor decoded boxes and class scores. Resizing and normalization run before the
@@ -22,14 +23,12 @@ import contextlib
 import copy
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
-from pydantic import Field
 from torch import nn
 from torchvision.models import WeightsEnum, detection
 from torchvision.models.detection import transform as detection_transform
@@ -48,21 +47,15 @@ from inference_model_core import (
     ModelBundleInfo,
     NetworkParams,
     TensorInfo,
-    register_component,
     write_bundle,
 )
-from inference_model_core.components import (
-    AnchorNMS,
-    Detections,
-    DetectionsToBboxes,
-    ImageToTensor,
-    LoadImage,
-    ResizeImage,
-)
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
-from inference_model_torch.component import OnnxExport, TorchNetworkComponent, load_state_dict_file
+from inference_model_core.definitions import AnchorNMS, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_torch import register_component
+from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
 from model_exporters.class_names import detection_task, placeholder_class_name
+from model_exporters.definitions import TorchvisionFasterRCNN, TorchvisionSSDNetwork
 
 FRAMEWORK = "torchvision"
 WEIGHTS_FILE = "network/weights.pth"
@@ -350,34 +343,22 @@ def _freeze_batch_norm(module: nn.Module) -> None:
             _freeze_batch_norm(child)
 
 
-class AnchorPredictions(NamedTuple):
-    boxes: np.ndarray  # (N, A, 4) decoded xyxy boxes in input pixels
-    scores: np.ndarray  # (N, A, labels)
-
-
 @register_component
-class TorchvisionSSDNetwork(TorchNetworkComponent):
-    """SSD backbone and head with box decoding: 'images' (N, 3, H, W) -> 'boxes' (N, A, 4) decoded xyxy boxes in
-    input pixels and 'scores' (N, A, labels) per anchor."""
-
-    type = "torchvision_ssd_network"
-
-    architecture: str = Field(description=f"torchvision architecture. Options: {list(PRETRAINED_MODELS)}")
-    num_classes: int = Field(gt=0, description="Number of model labels, including the background label")
-
+class TorchvisionSSDModule(TorchNetwork[TorchvisionSSDNetwork]):
     def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
-        ssd = _build_detector(self.architecture, self.num_classes, path_weights)
+        ssd = _build_detector(self.params.architecture, self.params.num_classes, path_weights)
         if not isinstance(ssd, SSD) or ssd.transform.fixed_size is None:
-            raise ValueError(f"'{self.architecture}' is not an SSD model with a fixed input size.")
+            raise ValueError(f"'{self.params.architecture}' is not an SSD model with a fixed input size.")
         width, height = ssd.transform.fixed_size  # torchvision stores (width, height)
         return _SSDNetwork(ssd, height=height, width=width).to(device).eval()
 
-    def forward(self, images: np.ndarray) -> AnchorPredictions:
-        return AnchorPredictions(*self.call_model(self._model, images))
+    def forward(self, images: torch.Tensor) -> Dict[str, Any]:
+        boxes, scores = self.model(images)
+        return {"boxes": boxes, "scores": scores}
 
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
         options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
-        network = copy.deepcopy(self._model).cpu()
+        network = copy.deepcopy(self.model).cpu()
         height, width, dynamic_batch = network.height, network.width, options["dynamic_batch"]
         onnx_export(
             network,
@@ -393,7 +374,7 @@ class TorchvisionSSDNetwork(TorchNetworkComponent):
             input_tensors=[TensorInfo(name="images", shape=[batch, 3, height, width])],
             output_tensors=[
                 TensorInfo(name="boxes", shape=[batch, n_anchors, 4]),
-                TensorInfo(name="scores", shape=[batch, n_anchors, self.num_classes]),
+                TensorInfo(name="scores", shape=[batch, n_anchors, self.params.num_classes]),
             ],
         )
         return OnnxExport(params=params, batched=True)
@@ -529,33 +510,24 @@ def _export_safe_ops() -> Iterator[None]:
 
 
 @register_component
-class TorchvisionFasterRCNN(TorchNetworkComponent):
-    """The full Faster R-CNN model for one image: 'image' (3, H, W) in [0, 1] -> final 'boxes' (K, 4) xyxy in
-    pixels of the image, 'scores' (K,) and 'labels' (K,). Resize, normalization and NMS are part of the network."""
-
-    type = "torchvision_faster_rcnn"
-
-    architecture: str = Field(description=f"torchvision architecture. Options: {list(PRETRAINED_MODELS)}")
-    num_classes: int = Field(gt=0, description="Number of model labels, including the background label")
-    min_score: float = Field(description="Score threshold in the network. The runtime threshold filters on top")
-    nms_iou_threshold: float
-    max_detections: int = Field(gt=0, description="Highest scoring detections the network returns")
-
+class TorchvisionFasterRCNNModule(TorchNetwork[TorchvisionFasterRCNN]):
     def build_model(self, path_weights: Path, device: torch.device) -> nn.Module:
-        model = _build_detector(self.architecture, self.num_classes, path_weights)
+        params = self.params
+        model = _build_detector(params.architecture, params.num_classes, path_weights)
         if not isinstance(model, FasterRCNN):
-            raise ValueError(f"'{self.architecture}' is not a Faster R-CNN model.")
-        model.roi_heads.score_thresh = self.min_score
-        model.roi_heads.nms_thresh = self.nms_iou_threshold
-        model.roi_heads.detections_per_img = self.max_detections
+            raise ValueError(f"'{params.architecture}' is not a Faster R-CNN model.")
+        model.roi_heads.score_thresh = params.min_score
+        model.roi_heads.nms_thresh = params.nms_iou_threshold
+        model.roi_heads.detections_per_img = params.max_detections
         return _FullGraphDetector(model).to(device).eval()
 
-    def forward(self, image: np.ndarray) -> Detections:
-        return Detections(*self.call_model(self._model, image))
+    def forward(self, image: torch.Tensor) -> Dict[str, Any]:
+        boxes, scores, labels = self.model(image)
+        return {"boxes": boxes, "scores": scores, "labels": labels}
 
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
         options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION})
-        export_model = copy.deepcopy(self._model).cpu().eval()
+        export_model = copy.deepcopy(self.model).cpu().eval()
         # torchvision handles images without proposals (e.g. blank frames, common in video) with Python branches
         # and reshapes that don't survive tracing, and computes the resize in float32 when traced. Replace those
         # parts for the export (see the helpers above).

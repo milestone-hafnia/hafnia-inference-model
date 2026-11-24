@@ -2,7 +2,8 @@
 
 'GraphInferenceModel' runs the bundle's model graph with the image as graph input 'image' and returns the graph
 output 'predictions', so every bundle works with 'hafnia.dataset.benchmark'. There is one class for all model
-families, engines and formats: what a model does is described by the components of its graph.
+families, engines and formats: what a model does is described by the components of its graph, and a graph
+engine runs them.
 """
 
 from pathlib import Path
@@ -12,7 +13,7 @@ from hafnia.dataset.benchmark.inference_model import ImageType, InferenceModel
 from hafnia.dataset.primitives import Primitive
 
 from inference_model_core.bundle import PathLike
-from inference_model_core.graph import ModelGraph
+from inference_model_core.graph import DEFAULT_GRAPH_ENGINE, ModelGraph, load_graph
 from inference_model_core.model_info import ModelBundleInfo
 
 INPUT_KEY = "image"
@@ -25,7 +26,7 @@ class GraphInferenceModel(InferenceModel):
         if graph_info.inputs != [INPUT_KEY] or OUTPUT_KEY not in graph_info.outputs:
             raise ValueError(
                 f"An inference model needs a graph with the input '{INPUT_KEY}' and an output '{OUTPUT_KEY}', got "
-                f"inputs {graph_info.inputs} and outputs {graph_info.outputs}. Use 'ModelGraph' for other graphs."
+                f"inputs {graph_info.inputs} and outputs {graph_info.outputs}. Use 'load_graph' for other graphs."
             )
         self.graph = graph
 
@@ -58,20 +59,23 @@ def inference_model_from_path(
     device: str = "CPU",
     num_threads: Optional[int] = None,
     engine_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    graph_engine: str = DEFAULT_GRAPH_ENGINE,
 ) -> GraphInferenceModel:
     """Load a model bundle as an inference model.
 
     Args:
         path_bundle: Zip or directory bundle.
-        inference_engine: Engine for the components that have an implementation on it. Defaults to each
-            component's default engine. E.g. 'openvino' runs an ONNX bundle on OpenVINO.
-        params: Overrides of component parameters, e.g. '{"score_threshold": 0.5}' (see 'ModelGraph.load').
-        device: Device for the engines, e.g. 'CPU'.
-        num_threads: Threads per engine. 'None' uses the engine defaults.
-        engine_options: Engine name -> settings only that engine knows.
+        inference_engine: Inference engine for the components that have an implementation on it. Defaults to
+            each component's default implementation. E.g. 'openvino' runs an ONNX bundle on OpenVINO.
+        params: Overrides of component parameters, e.g. '{"score_threshold": 0.5}' (see 'load_graph').
+        device: Device for the inference engines, e.g. 'CPU'.
+        num_threads: Threads per inference engine. 'None' uses the engine defaults.
+        engine_options: Inference engine name -> settings only that engine knows.
+        graph_engine: Graph engine that runs the components.
     """
-    graph = ModelGraph.load(
+    graph = load_graph(
         path_bundle,
+        graph_engine=graph_engine,
         inference_engine=inference_engine,
         params=params,
         device=device,

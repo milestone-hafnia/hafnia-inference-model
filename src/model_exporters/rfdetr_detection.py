@@ -5,8 +5,9 @@ name. The bundle is a graph of components:
 
     load_image -> resize -> to_tensor -> network -> topk -> to_bboxes
 
-The network is a torch component ('rfdetr_network'): input '[N, 3, R, R]', outputs one box per query ('dets',
-normalized center x, center y, width, height) and the class logits per query ('labels'). It converts to ONNX with
+The network is a torch network ('rfdetr_network', defined in 'model_exporters.definitions'): input
+'[N, 3, R, R]', outputs one box per query ('dets', normalized center x, center y, width, height) and the class
+logits per query ('labels'). It converts to ONNX with
 RF-DETR's own export, and from there to OpenVINO (see 'inference_model_core.convert'). Sigmoid, top-k over
 (query, class) and the box conversion run after the network ('query_topk'), as RF-DETR's 'PostProcess'.
 DETR-style models need no NMS.
@@ -23,30 +24,22 @@ import argparse
 import importlib.metadata
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
-import numpy as np
 import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
-from pydantic import Field, PrivateAttr
 from rfdetr import detr
 from rfdetr.util.coco_classes import COCO_CLASSES
 
-from inference_model_core import (
-    ConversionInfo,
-    GraphInfo,
-    ModelBundleInfo,
-    NetworkParams,
-    TensorInfo,
-    register_component,
-    write_bundle,
-)
-from inference_model_core.components import DetectionsToBboxes, ImageToTensor, LoadImage, QueryTopK, ResizeImage
+from inference_model_core import ConversionInfo, GraphInfo, ModelBundleInfo, NetworkParams, TensorInfo, write_bundle
 from inference_model_core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
-from inference_model_torch.component import OnnxExport, TorchNetworkComponent, load_state_dict_file
+from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, QueryTopK, ResizeImage
+from inference_model_torch import register_component
+from inference_model_torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from inference_model_torch.onnx_export import DEFAULT_OPSET_VERSION, onnx_options
 from model_exporters.class_names import detection_task, placeholder_class_name
+from model_exporters.definitions import RFDETRNetwork
 from model_exporters.trainer_archive import open_trainer_archive
 
 FRAMEWORK = "rfdetr"
@@ -64,38 +57,26 @@ MODEL_CLASSES: Dict[str, Type[detr.RFDETR]] = {
 }
 
 
-class QueryPredictions(NamedTuple):
-    dets: np.ndarray  # (N, Q, 4) boxes as normalized (center x, center y, width, height)
-    labels: np.ndarray  # (N, Q, C) class logits
-
-
 @register_component
-class RFDETRNetwork(TorchNetworkComponent):
-    """The RF-DETR network: 'input' (N, 3, R, R) -> 'dets' (N, Q, 4) boxes as normalized (center x, center y,
-    width, height) and 'labels' (N, Q, C) class logits per query."""
-
-    type = "rfdetr_network"
-
-    model_name: str = Field(description=f"RF-DETR model. Options: {list(MODEL_CLASSES)}")
-
-    _model: detr.RFDETR = PrivateAttr()
+class RFDETRModule(TorchNetwork[RFDETRNetwork]):
+    model: detr.RFDETR
 
     def build_model(self, path_weights: Path, device: torch.device) -> detr.RFDETR:
         # RF-DETR unpickles its checkpoints. Bundles hold checkpoints of tensors and plain values only (see
         # 'write_checkpoint'): reading them here without unpickling objects rejects anything else.
         load_state_dict_file(path_weights)
-        model = _model_class(self.model_name)(pretrain_weights=str(path_weights))
+        model = _model_class(self.params.model_name)(pretrain_weights=str(path_weights))
         model.model.model = model.model.model.to(device).eval()
         model.model.device = device
         return model
 
-    def forward(self, input: np.ndarray) -> QueryPredictions:  # 'input' is the tensor name of RF-DETR's export
-        outputs = self.call_model(self._model.model.model, input)
-        return QueryPredictions(dets=outputs["pred_boxes"], labels=outputs["pred_logits"])
+    def forward(self, input: torch.Tensor) -> Dict[str, Any]:  # 'input' is the tensor name of RF-DETR's export
+        outputs = self.model.model.model(input)
+        return {"dets": outputs["pred_boxes"], "labels": outputs["pred_logits"]}
 
     def export_onnx(self, path_onnx: Path, options: Dict[str, Any]) -> OnnxExport:
         options = onnx_options(options, defaults={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True})
-        model, dynamic_batch = self._model, options["dynamic_batch"]
+        model, dynamic_batch = self.model, options["dynamic_batch"]
         with tempfile.TemporaryDirectory(prefix="rfdetr_export_") as tmp_dir:
             model.export(
                 output_dir=tmp_dir, dynamic_batch=dynamic_batch, opset_version=options["opset_version"], verbose=False
@@ -204,17 +185,19 @@ def create_rfdetr_detection_bundle(
     task = detection_task(categories, TASK_NAME)
 
     components = [
-        LoadImage().connect("load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
+        LoadImage().connect(name="load_image", inputs={"image": "image"}, outputs={"image": "image_rgb"}),
         ResizeImage(
             mode="stretch", height=resolution, width=resolution, interpolation="linear", antialias=True
         ).connect(
-            "resize", inputs={"image": "image_rgb"}, outputs={"image": "image_resized", "transform": "image_transform"}
+            name="resize",
+            inputs={"image": "image_rgb"},
+            outputs={"image": "image_resized", "transform": "image_transform"},
         ),
         ImageToTensor(scale=1 / 255, mean=list(model.means), std=list(model.stds)).connect(
-            "to_tensor", inputs={"image": "image_resized"}, outputs={"tensor": "input_tensor"}
+            name="to_tensor", inputs={"image": "image_resized"}, outputs={"tensor": "input_tensor"}
         ),
         RFDETRNetwork(model_name=model_name).connect(
-            "network",
+            name="network",
             inputs={"input": "input_tensor"},
             outputs={"dets": "query_boxes", "labels": "query_logits"},
             files=[WEIGHTS_FILE],
@@ -234,12 +217,12 @@ def create_rfdetr_detection_bundle(
             },
         ),
         QueryTopK(num_select=model.model.postprocess.num_select).connect(
-            "topk",
+            name="topk",
             inputs={"boxes": "query_boxes", "logits": "query_logits", "transform": "image_transform"},
             outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
         ),
         DetectionsToBboxes(task_name=TASK_NAME, score_threshold=DEFAULT_SCORE_THRESHOLD).connect(
-            "to_bboxes",
+            name="to_bboxes",
             inputs={"boxes": "boxes", "scores": "scores", "labels": "labels", "transform": "image_transform"},
             outputs={"predictions": "predictions"},
         ),

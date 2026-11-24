@@ -9,20 +9,28 @@ the model as a **graph of components**, for example
 
 ```
 image -> load_image -> resize -> to_tensor -> network -> nms -> to_bboxes -> predictions
-          (numpy)     (numpy)    (numpy)     (onnx)   (numpy)   (numpy)
+                                           (onnx_network)
 ```
 
-Each component reads and writes named items of one data dictionary and has a type, a runtime (NumPy, torch,
-ONNX, OpenVINO), parameters and the conversions it supports. In code a component is one pydantic model: its
-fields are the parameters, `forward` is the implementation, and the signature of `forward` names the ports. One executor runs any graph, the engines only
-run `network` components, and converting a bundle (torch → ONNX → OpenVINO → INT8) replaces the network and
-keeps the rest. A new model family is a new graph built from existing components.
+Each component reads and writes named items of one data dictionary and has a type, parameters and the
+conversions it supports. The bundle only **defines** the model, and a **graph engine** runs it:
+
+- A **component definition** (`inference_model_core`) is a pydantic model for one component type: its fields
+  are the parameters and it declares the ports (named inputs and outputs). It holds no implementation and
+  needs no tensor library.
+- The **torch graph engine** (`inference_model_torch`) has an implementation of every definition and runs the
+  graph. Components exchange `torch.Tensor`s, so a graph can run on the GPU from the image to the detections.
+  Networks stored as ONNX or OpenVINO IR files run on ONNX Runtime or OpenVINO inside the same graph.
+
+Converting a bundle (torch → ONNX → OpenVINO → INT8) replaces the network and keeps the rest. A new model
+family is a new graph built from existing components. Running a graph needs torch, whatever format the network
+has.
 
 See [docs/design.md](docs/design.md) for the concept and decisions.
 
 ## Supported models
 
-| Model | Task | Sources | Network | After the network (NumPy components) |
+| Model | Task | Sources | Network | After the network |
 |---|---|---|---|---|
 | torchvision SSDLite320 MobileNetV3 | detection | pretrained | backbone, head, box decoding | per-class threshold, top-k and NMS |
 | torchvision Faster R-CNN MobileNetV3 320 FPN | detection | pretrained | the full model incl. resize and NMS | score threshold |
@@ -37,11 +45,11 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 | Package | Purpose |
 |---|---|
-| `inference_model_core` | Model info schema, model bundles (zip/dir), components and their registry, `ModelGraph` (the executor), `GraphInferenceModel` and `inference_model_from_path`, `convert_bundle`, and the standard NumPy components (image loading, resize, tensor conversion, NMS, query top-k, primitives). Engine agnostic, torch free. |
-| `inference_model_onnxruntime` | Runs ONNX `network` components on ONNX Runtime |
-| `inference_model_openvino` | Runs ONNX and OpenVINO IR `network` components on OpenVINO. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
-| `inference_model_torch` | Base class of torch networks and the converter torch → ONNX |
-| `model_exporters` | Model families: the torch network components of torchvision SSD, Faster R-CNN and ResNet18 and of RF-DETR, and the functions that write their bundles from pretrained models and trainer archives |
+| `inference_model_core` | The bundle definition: model info schema, model bundles (zip/dir), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), `convert_bundle`, and the interface of a loaded graph (`load_graph`, `GraphInferenceModel`, `inference_model_from_path`). No implementations, torch free. |
+| `inference_model_torch` | The torch graph engine: `TorchModelGraph` (the executor), the implementations of the standard definitions in torch, the base classes of networks, and the converter torch → ONNX |
+| `inference_model_onnxruntime` | Runs `onnx_network` components on ONNX Runtime, inside the torch graph engine |
+| `inference_model_openvino` | Runs `openvino_network` (and on request `onnx_network`) components on OpenVINO, inside the torch graph engine. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
+| `model_exporters` | Model families: the definitions and torch implementations of the networks of torchvision SSD, Faster R-CNN and ResNet18 and of RF-DETR, and the functions that write their bundles from pretrained models and trainer archives |
 | `package_openvino` | Trainer glue: checkpoint and dataset loading, latency per component, metrics, class mappings |
 
 ## Scripts
@@ -139,7 +147,7 @@ python scripts/benchmark.py --model-path ssdlite320_mobilenet_v3_large_onnx.zip 
 from inference_model_core import convert_bundle, inference_model_from_path, read_model_info
 from model_exporters.registry import create_pretrained_bundle
 
-# Write a pretrained model as a bundle with a torch network, and convert it. Only this part needs torch.
+# Write a pretrained model as a bundle with a torch network, and convert it
 create_pretrained_bundle("ssdlite320_mobilenet_v3_large", "model_torch.zip")
 convert_bundle("model_torch.zip", "model_onnx.zip", target="onnx")
 convert_bundle("model_onnx.zip", "model_openvino.zip", target="openvino")  # Or options={"precision": "fp16"}
@@ -156,16 +164,22 @@ model = inference_model_from_path(
     "model_onnx.zip",
     inference_engine="openvino",  # Optional: run the ONNX network on OpenVINO
     params={"score_threshold": 0.3},  # Optional: override component parameters ("nms.score_threshold" for one)
-    device="CPU",  # Engine option
+    device="CPU",  # "CUDA" runs the torch components and an ONNX Runtime network on the GPU
 )
 primitives = model.predict(image)  # List[Primitive], e.g. Bbox predictions
 
-# A component also runs on its own
-from inference_model_core.components import ResizeImage
-
-resized = ResizeImage(mode="letterbox", height=320, width=320).forward(image)  # resized.image, resized.transform
-
-# The graph and intermediate values
-print([f"{c.name} ({c.type}, {c.runtime})" for c in read_model_info("model_onnx.zip").graph.components])
+# The graph and intermediate values (torch tensors)
+print([f"{c.name} ({c.type})" for c in read_model_info("model_onnx.zip").graph.components])
 network_outputs = model.graph.run({"image": image}, outputs=["anchor_boxes", "anchor_scores"])
+
+# A definition describes a component and connects it into a graph. It computes nothing itself
+from inference_model_core.definitions import ResizeImage
+
+resize = ResizeImage(mode="letterbox", height=320, width=320)
+info = resize.connect("resize", inputs={"image": "image_rgb"}, outputs={"image": "resized", "transform": "t"})
+
+# The torch implementations are functions on tensors, which also run on their own
+from inference_model_torch.components.image import load_image_rgb, resize_image
+
+resized, transform = resize_image(load_image_rgb(image), mode="letterbox", height=320, width=320)
 ```

@@ -1,6 +1,6 @@
-"""Converters to OpenVINO IR ('model.xml' + 'model.bin') for 'network' components.
+"""Converters of networks to 'openvino_network' components (OpenVINO IR, 'model.xml' + 'model.bin').
 
-- 'openvino': an ONNX network as IR, with FP32 or FP16 weights (option 'precision').
+- 'openvino': an 'onnx_network' as IR, with FP32 or FP16 weights (option 'precision').
 - 'openvino_int8': INT8 post-training quantization (NNCF) of an FP32 ONNX or IR network. The component is
   calibrated on the inputs it gets at inference ('ConversionRequest.calibration'). Which graph nodes stay in
   floating point and the model type (transformer or not) are the component's stored conversion options, written
@@ -14,8 +14,8 @@ import openvino as ov
 
 from inference_model_core import ComponentInfo, ConversionRequest, NetworkParams, register_converter
 from inference_model_core.convert import TARGET_OPENVINO, TARGET_OPENVINO_INT8, CalibrationFeed
-from inference_model_core.model_info import RUNTIME_ONNX, RUNTIME_OPENVINO
-from inference_model_core.network import NETWORK_TYPE
+from inference_model_core.definitions.network import ONNX_NETWORK_TYPE, OPENVINO_NETWORK_TYPE
+from inference_model_torch.component import to_numpy
 
 IR_MODEL_FILENAME = "model.xml"
 IR_WEIGHTS_FILENAME = "model.bin"
@@ -28,7 +28,7 @@ OPENVINO_OPTIONS = {"precision"}
 INT8_OPTIONS = {"preset", "ignored_node_patterns", "model_type"}
 
 
-@register_converter(RUNTIME_ONNX, TARGET_OPENVINO)
+@register_converter(ONNX_NETWORK_TYPE, TARGET_OPENVINO)
 def convert_onnx_to_openvino(request: ConversionRequest) -> ComponentInfo:
     """Options:
     precision: Weight precision of the IR. 'fp32' (default) keeps the ONNX weights. 'fp16' stores weights as
@@ -39,12 +39,12 @@ def convert_onnx_to_openvino(request: ConversionRequest) -> ComponentInfo:
     if precision not in ("fp32", "fp16"):
         raise ValueError(f"'precision' must be 'fp32' or 'fp16', got '{precision}'. INT8 is target 'openvino_int8'.")
     model = ov.convert_model(request.path_source_dir / request.component.files[0])
-    provenance = {"conversion": {"tool": "openvino.convert_model", "source_runtime": request.component.runtime}}
+    provenance = {"conversion": {"tool": "openvino.convert_model", "source_type": request.component.type}}
     return _write_ir_component(request, model, precision, provenance)
 
 
-@register_converter(RUNTIME_ONNX, TARGET_OPENVINO_INT8)
-@register_converter(RUNTIME_OPENVINO, TARGET_OPENVINO_INT8)
+@register_converter(ONNX_NETWORK_TYPE, TARGET_OPENVINO_INT8)
+@register_converter(OPENVINO_NETWORK_TYPE, TARGET_OPENVINO_INT8)
 def quantize_to_openvino_int8(request: ConversionRequest) -> ComponentInfo:
     """Quantize the weights and activations of an FP32 network to INT8.
 
@@ -91,21 +91,23 @@ def quantize_to_openvino_int8(request: ConversionRequest) -> ComponentInfo:
 
 
 class _Reiterable:
-    """NNCF can pass over the calibration data more than once."""
+    """NNCF can pass over the calibration data more than once. The feed yields the tensors of the torch graph
+    engine, OpenVINO takes arrays."""
 
     def __init__(self, feed: CalibrationFeed):
         self._feed = feed
 
     def __iter__(self) -> Iterator[Dict[str, Any]]:
-        return self._feed()
+        for inputs in self._feed():
+            yield {name: to_numpy(tensor) for name, tensor in inputs.items()}
 
 
 def _check_request(request: ConversionRequest, known_options: set) -> NetworkParams:
     component = request.component
-    if component.type != NETWORK_TYPE:
+    if component.type not in (ONNX_NETWORK_TYPE, OPENVINO_NETWORK_TYPE):
         raise ValueError(
-            f"Only '{NETWORK_TYPE}' components convert to '{request.target}', '{component.name}' is a "
-            f"'{component.type}'."
+            f"Only '{ONNX_NETWORK_TYPE}' and '{OPENVINO_NETWORK_TYPE}' components convert to '{request.target}', "
+            f"'{component.name}' is a '{component.type}'."
         )
     unknown = sorted(set(request.options) - known_options)
     if unknown:
@@ -126,7 +128,7 @@ def _write_ir_component(
 ) -> ComponentInfo:
     """Write an OpenVINO model as the IR files of the converted component and return its component info.
 
-    The source component (runtime, files, precision, provenance) is kept under 'provenance.parent', so a
+    The source component (type, files, precision, provenance) is kept under 'provenance.parent', so a
     component can be traced back to its source. Weights are compressed to FP16 only for 'fp16': 'ov.save_model'
     compresses by default, which would silently turn an FP32 model into FP16.
     """
@@ -141,7 +143,7 @@ def _write_ir_component(
     conversions = {TARGET_OPENVINO_INT8: component.conversions[TARGET_OPENVINO_INT8]} if can_quantize else {}
     return component.model_copy(
         update={
-            "runtime": RUNTIME_OPENVINO,
+            "type": OPENVINO_NETWORK_TYPE,
             "files": files,
             "params": params.model_copy(update={"precision": precision}).model_dump(mode="json"),
             "conversions": conversions,
@@ -150,7 +152,7 @@ def _write_ir_component(
                 "openvino_version": ov.get_version(),
                 "compress_to_fp16": precision == "fp16",
                 "parent": {
-                    "runtime": component.runtime,
+                    "type": component.type,
                     "files": component.files,
                     "precision": params.precision,
                     "provenance": component.provenance,

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 from helpers import (
     DUMMY_CLASS_NAMES,
     DUMMY_DETECTIONS,
@@ -12,18 +13,26 @@ from helpers import (
 )
 from pydantic import ValidationError
 
-from inference_model_core import GraphInfo, ModelGraph, register_component, write_bundle
-from inference_model_core.component import unregister_component
+from inference_model_core import GraphInfo, list_graph_engines, load_graph, write_bundle
+from inference_model_torch import TorchModelGraph, register_component
+from inference_model_torch.component import unregister_component
 
 IMAGES = [random_image(32, 32, seed=0), random_image(20, 40, seed=1), random_image(64, 16, seed=2)]
 
 
-def network(graph: ModelGraph) -> DummyNetwork:
+def network(graph) -> DummyNetwork:
     return next(component for component in graph.components if isinstance(component, DummyNetwork))
 
 
+def test_torch_is_the_graph_engine(tmp_path, dummy_network):
+    assert list_graph_engines() == ["torch"]
+    assert isinstance(load_graph(write_dummy_bundle(tmp_path / "model.zip")), TorchModelGraph)
+    with pytest.raises(KeyError, match="No graph engine 'numpy'"):
+        load_graph(tmp_path / "model.zip", graph_engine="numpy")
+
+
 def test_run_is_a_dictionary_in_and_out(tmp_path, dummy_network):
-    graph = ModelGraph.load(write_dummy_bundle(tmp_path / "model.zip"))
+    graph = load_graph(write_dummy_bundle(tmp_path / "model.zip"))
     outputs = graph.run({"image": IMAGES[0]})
 
     assert list(outputs) == ["predictions"]
@@ -40,7 +49,7 @@ def test_run_is_a_dictionary_in_and_out(tmp_path, dummy_network):
     ],
 )
 def test_run_batch(tmp_path, dummy_network, kwargs, expected_input_shapes):
-    graph = ModelGraph.load(write_dummy_bundle(tmp_path / "model.zip", **kwargs))
+    graph = load_graph(write_dummy_bundle(tmp_path / "model.zip", **kwargs))
     outputs = graph.run_batch({"image": IMAGES})
 
     assert network(graph).input_shapes == expected_input_shapes
@@ -48,8 +57,32 @@ def test_run_batch(tmp_path, dummy_network, kwargs, expected_input_shapes):
     assert graph.run_batch({"image": []}) == {"predictions": []}
 
 
+def test_components_exchange_torch_tensors(tmp_path, dummy_network):
+    graph = load_graph(write_dummy_bundle(tmp_path / "model.zip"))
+    outputs = graph.run({"image": IMAGES[1]}, outputs=["image_rgb", "input_tensor", "scores"])
+
+    assert all(isinstance(value, torch.Tensor) and not value.requires_grad for value in outputs.values())
+    assert (outputs["image_rgb"].dtype, outputs["input_tensor"].dtype) == (torch.uint8, torch.float32)
+    # A tensor as graph input gives the same as the array
+    as_tensor = graph.run({"image": torch.from_numpy(IMAGES[1])}, outputs=["input_tensor"])
+    assert torch.equal(as_tensor["input_tensor"], outputs["input_tensor"])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Needs a CUDA device")
+def test_tensors_stay_on_the_device_of_the_graph(tmp_path, dummy_network):
+    path_bundle = write_dummy_bundle(tmp_path / "model.zip")
+    graph = load_graph(path_bundle, device="CUDA")
+    outputs = graph.run({"image": IMAGES[1]}, outputs=["image_rgb", "input_tensor", "scores", "predictions"])
+
+    assert {outputs[key].device.type for key in ("image_rgb", "input_tensor", "scores")} == {"cuda"}
+    assert outputs["predictions"] == load_graph(path_bundle).run({"image": IMAGES[1]})["predictions"]
+    timings = {}
+    graph.run_batch({"image": IMAGES}, timings=timings)
+    assert set(timings) == {"load_image", "resize", "to_tensor", "network", "to_bboxes"}
+
+
 def test_intermediate_outputs_only_run_what_they_need(tmp_path, dummy_network):
-    graph = ModelGraph.load(write_dummy_bundle(tmp_path / "model.zip"))
+    graph = load_graph(write_dummy_bundle(tmp_path / "model.zip"))
     outputs = graph.run({"image": IMAGES[1]}, outputs=["input_tensor", "image_transform"])
 
     assert outputs["input_tensor"].shape == (3, 32, 32)
@@ -63,7 +96,7 @@ def test_intermediate_outputs_only_run_what_they_need(tmp_path, dummy_network):
 def test_load_for_outputs_loads_only_needed_components(tmp_path):
     # The dummy network is not registered: it is not needed for the inputs of the network
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
-    graph = ModelGraph.load(path_bundle, outputs=["input_tensor"])
+    graph = load_graph(path_bundle, outputs=["input_tensor"])
 
     assert [component.info.name for component in graph.components] == ["load_image", "resize", "to_tensor"]
     assert graph.run({"image": IMAGES[0]}, outputs=["input_tensor"])["input_tensor"].shape == (3, 32, 32)
@@ -74,7 +107,7 @@ def test_load_for_outputs_loads_only_needed_components(tmp_path):
 
 
 def test_timings_per_component(tmp_path, dummy_network):
-    graph = ModelGraph.load(write_dummy_bundle(tmp_path / "model.zip"))
+    graph = load_graph(write_dummy_bundle(tmp_path / "model.zip"))
     timings = {"network": 100.0}
     graph.run_batch({"image": IMAGES}, timings=timings)
 
@@ -83,54 +116,56 @@ def test_timings_per_component(tmp_path, dummy_network):
 
 
 def test_inputs_are_checked(tmp_path, dummy_network):
-    graph = ModelGraph.load(write_dummy_bundle(tmp_path / "model.zip"))
+    graph = load_graph(write_dummy_bundle(tmp_path / "model.zip"))
     with pytest.raises(KeyError, match=r"Missing: \['image'\], unknown: \['picture'\]"):
         graph.run({"picture": IMAGES[0]})
 
 
 def test_param_overrides(tmp_path, dummy_network):
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
-    assert len(ModelGraph.load(path_bundle).run({"image": IMAGES[0]})["predictions"]) == 2  # Default: threshold 0
+    assert len(load_graph(path_bundle).run({"image": IMAGES[0]})["predictions"]) == 2  # Default: threshold 0
 
     for params in ({"score_threshold": 0.5}, {"to_bboxes.score_threshold": 0.5}):
-        graph = ModelGraph.load(path_bundle, params=params)
+        graph = load_graph(path_bundle, params=params)
         assert [p.confidence for p in graph.run({"image": IMAGES[0]})["predictions"]] == pytest.approx([0.9])
         # The model info, and so a written bundle, keeps the defaults
         assert graph.model_info.graph.get_component("to_bboxes").params["score_threshold"] == 0.0
 
     for unknown in ("unknown_param", "resize.score_threshold", "nothing.score_threshold"):
         with pytest.raises(KeyError, match="No component parameter"):
-            ModelGraph.load(path_bundle, params={unknown: 1})
+            load_graph(path_bundle, params={unknown: 1})
     with pytest.raises(ValidationError, match="score_threshold"):
-        ModelGraph.load(path_bundle, params={"score_threshold": 2.0})
+        load_graph(path_bundle, params={"score_threshold": 2.0})
 
 
-def test_engine_override_and_options(tmp_path, dummy_network):
-    register_component(DummyNetworkOnOtherEngine)
+def test_inference_engine_override_and_options(tmp_path, dummy_network):
+    register_component(alternative=True)(DummyNetworkOnOtherEngine)
     try:
         path_bundle = write_dummy_bundle(tmp_path / "model.zip")
-        assert type(network(ModelGraph.load(path_bundle))) is DummyNetwork  # Default engine of the runtime
+        assert type(network(load_graph(path_bundle))) is DummyNetwork  # The default implementation
 
-        graph = ModelGraph.load(
+        graph = load_graph(
             path_bundle, inference_engine="other", device="GPU", num_threads=2, engine_options={"other": {"hint": 1}}
         )
         assert type(network(graph)) is DummyNetworkOnOtherEngine
         options = network(graph).context.options
         assert (options.device, options.num_threads, options.for_engine("other")) == ("GPU", 2, {"hint": 1})
+        # 'GPU' is a device of another inference engine: the components written in torch use the CPU
+        assert graph.run({"image": IMAGES[0]}, outputs=["input_tensor"])["input_tensor"].device.type == "cpu"
         assert graph.model_info == make_model_info()  # The bundle is unchanged
     finally:
-        unregister_component(DummyNetworkOnOtherEngine.key())
+        unregister_component(DummyNetworkOnOtherEngine)
 
-    with pytest.raises(ValueError, match=r"No component of .* runs on engine 'other'"):
-        ModelGraph.load(path_bundle, inference_engine="other")
+    with pytest.raises(ValueError, match=r"No component of .* runs on inference engine 'other'"):
+        load_graph(path_bundle, inference_engine="other")
     with pytest.raises(ValueError, match=r"given for engines \['other'\], which run no component"):
-        ModelGraph.load(path_bundle, engine_options={"other": {}})
+        load_graph(path_bundle, engine_options={"other": {}})
 
 
 def test_unknown_component(tmp_path):
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")  # 'dummy_network' fixture not used: not registered
-    with pytest.raises(KeyError, match="No component is registered for type 'network' on runtime 'dummy'"):
-        ModelGraph.load(path_bundle)
+    with pytest.raises(KeyError, match="no implementation of component type 'dummy_network'"):
+        load_graph(path_bundle)
 
 
 def test_duplicate_registration(dummy_network):
@@ -142,9 +177,9 @@ def test_duplicate_registration(dummy_network):
 
 
 def test_write_round_trip(tmp_path, dummy_network):
-    graph = ModelGraph.load(write_dummy_bundle(tmp_path / "model_dir"))
+    graph = load_graph(write_dummy_bundle(tmp_path / "model_dir"))
     path_copy = graph.write(tmp_path / "copy.zip")
-    copy = ModelGraph.load(path_copy)
+    copy = load_graph(path_copy)
 
     assert network(copy).detections == DUMMY_DETECTIONS
     assert copy.model_info == graph.model_info
@@ -163,4 +198,4 @@ def test_batched_components_need_equal_shapes(tmp_path, dummy_network):
     )
 
     with pytest.raises(ValueError, match="Can't batch input 'images' of component 'network'"):
-        ModelGraph.load(path_bundle).run_batch({"image": IMAGES})
+        load_graph(path_bundle).run_batch({"image": IMAGES})

@@ -72,7 +72,7 @@ def test_torch_bundle_model_info(ssd_torch, frcnn_torch, micro_coco):
         assert [name for name in class_names if not name.startswith("NotDefined_")] == coco_class_names
         # The network is stored by reference: weights plus the parameters to rebuild the module
         network = info.graph.get_component("network")
-        assert (network.runtime, network.files) == ("torch", ["network/weights.pth"])
+        assert network.files == ["network/weights.pth"]
         assert (network.params["architecture"], network.params["num_classes"]) == (info.name, 91)
         assert sorted(network.conversions) == ["onnx", "openvino", "openvino_int8"]
 
@@ -101,7 +101,7 @@ def test_onnx_bundle_model_info(ssd_torch, ssd, frcnn):
     ssd_network, frcnn_network = ssd_info.graph.get_component("network"), frcnn_info.graph.get_component("network")
 
     for network in (ssd_network, frcnn_network):
-        assert (network.type, network.runtime, network.files) == ("network", "onnx", ["network/model.onnx"])
+        assert (network.type, network.files) == ("onnx_network", ["network/model.onnx"])
         assert sorted(network.conversions) == ["openvino", "openvino_int8"]  # What is left after 'onnx'
         assert network.provenance["conversion"]["options"]["opset_version"] == 17
     assert ssd_network.provenance["parent"]["type"] == "torchvision_ssd_network"
@@ -128,12 +128,12 @@ def test_onnx_bundle_model_info(ssd_torch, ssd, frcnn):
 
 def test_torch_bundles_match_the_original_models(ssd_torch, frcnn_torch, images):
     """The torch network is rebuilt from the architecture name and the stored weights (Faster R-CNN with frozen
-    batch norm, as the pretrained model). It runs in the same graph as the NumPy components."""
+    batch norm, as the pretrained model). It runs in the same graph as the processing components."""
     ssd_model, ssd_categories, path_ssd = ssd_torch
     frcnn_model, frcnn_categories, path_frcnn = frcnn_torch
     ssd_bundle, frcnn_bundle = inference_model_from_path(path_ssd), inference_model_from_path(path_frcnn)
     for model in (ssd_bundle, frcnn_bundle):
-        assert {type(component).engine for component in model.graph.components} == {"torch", "numpy"}
+        assert {type(component).engine for component in model.graph.components} == {"torch"}
 
     for image in images:
         image_320 = cv2.resize(image, (320, 320), interpolation=cv2.INTER_LINEAR)
@@ -172,7 +172,7 @@ def test_onnx_export_options(ssd_torch, frcnn_torch, images, tmp_path):
 
 def test_ssd_matches_torch_without_resize(ssd, images):
     """With an image already at the model input size, resizing is an identity on both sides, so the only
-    differences are numerical (ONNX Runtime vs torch, NumPy vs torch postprocessing)."""
+    differences are numerical (ONNX Runtime vs torch, the bundle's vs the model's postprocessing)."""
     torch_model, categories, path_bundle = ssd
     model = inference_model_from_path(path_bundle)
     for image in images:

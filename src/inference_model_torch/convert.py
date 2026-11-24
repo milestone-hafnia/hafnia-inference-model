@@ -1,26 +1,26 @@
-"""Converter of torch networks to ONNX 'network' components.
+"""Converter of torch networks to 'onnx_network' components.
 
-Generic over model families: the torch component of the family writes the ONNX file ('export_onnx'), using its
-stored export options (e.g. opset, dynamic batch axis).
+Generic over model families: the torch implementation of the family writes the ONNX file ('export_onnx'), using
+its stored export options (e.g. opset, dynamic batch axis). A family registers the converter for its component
+type: 'register_converter("<type>", "onnx")(convert_torch_to_onnx)', or as an entry point named '<type>/onnx'.
 """
 
 import onnx
 import torch
 
-from inference_model_core import ComponentInfo, ConversionRequest, get_component_class, register_converter
+from inference_model_core import ComponentInfo, ConversionRequest
 from inference_model_core.convert import TARGET_ONNX
-from inference_model_core.model_info import RUNTIME_ONNX, RUNTIME_TORCH
-from inference_model_core.network import NETWORK_TYPE
-from inference_model_torch.component import TorchNetworkComponent
+from inference_model_core.definitions.network import ONNX_NETWORK_TYPE
+from inference_model_torch.component import get_component_class
+from inference_model_torch.network import TorchNetwork
 
 ONNX_MODEL_FILENAME = "model.onnx"
 
 
-@register_converter(RUNTIME_TORCH, TARGET_ONNX)
 def convert_torch_to_onnx(request: ConversionRequest) -> ComponentInfo:
     source = request.component
-    component_class = get_component_class(source.type, RUNTIME_TORCH)
-    if not issubclass(component_class, TorchNetworkComponent):
+    component_class = get_component_class(source.type)
+    if not issubclass(component_class, TorchNetwork):
         raise TypeError(f"Component '{source.name}' ('{source.type}') is not a torch network and has no ONNX export.")
     component = component_class.load(source, request.model_info, request.path_source_dir)
 
@@ -39,8 +39,7 @@ def convert_torch_to_onnx(request: ConversionRequest) -> ComponentInfo:
         )
     return ComponentInfo(
         name=source.name,
-        type=NETWORK_TYPE,
-        runtime=RUNTIME_ONNX,
+        type=ONNX_NETWORK_TYPE,
         inputs=source.inputs,
         outputs=source.outputs,
         params=export.params.model_dump(mode="json"),
@@ -51,11 +50,6 @@ def convert_torch_to_onnx(request: ConversionRequest) -> ComponentInfo:
         provenance={
             **export.provenance,
             "conversion": {"tool": "torch.onnx.export", "torch": torch.__version__, "options": request.options},
-            "parent": {
-                "type": source.type,
-                "runtime": source.runtime,
-                "params": source.params,
-                "provenance": source.provenance,
-            },
+            "parent": {"type": source.type, "params": source.params, "provenance": source.provenance},
         },
     )

@@ -42,9 +42,9 @@ def test_model_info(resnet18_torch, resnet18):
         "torchvision_classifier",
         "classification_from_logits",
     ]
-    assert (torch_network.runtime, torch_network.files) == ("torch", ["network/weights.pth"])
+    assert (torch_network.type, torch_network.files) == ("torchvision_classifier", ["network/weights.pth"])
     assert torch_network.params == {"architecture": "resnet18", "num_classes": 1000, "image_size": 224}
-    assert (network.type, network.runtime, network.batched) == ("network", "onnx", True)
+    assert (network.type, network.batched) == ("onnx_network", True)
     assert NetworkParams.model_validate(network.params).input_tensors[0].shape == [None, 3, 224, 224]
 
     assert info.framework == "torchvision"

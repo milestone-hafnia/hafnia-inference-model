@@ -5,7 +5,9 @@
 - a 'graph': the ordered list of components that turn the graph inputs (e.g. an image) into the graph outputs
   (e.g. predictions). Each component reads and writes named items of one data dictionary.
 
-A conversion (e.g. ONNX -> OpenVINO) copies the model info and only replaces the components it converts.
+The model info only describes the model. What a component type means (its parameters and ports) is its component
+definition ('inference_model_core.definition'), and how it is computed is up to the graph engine that runs the
+bundle. A conversion (e.g. ONNX -> OpenVINO) copies the model info and only replaces the components it converts.
 
 The extension lives here until the schema has settled and is then moved to hafnia (see docs/design.md).
 """
@@ -17,15 +19,9 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from hafnia.dataset.hafnia_dataset_types import ModelInfo
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-MODEL_INFO_FORMAT_VERSION = "2.0.0"
+MODEL_INFO_FORMAT_VERSION = "3.0.0"
 
 Precision = Literal["fp32", "fp16", "int8"]
-
-# Runtimes of this repo. Other packages can add their own, so the fields are plain strings.
-RUNTIME_NUMPY = "numpy"
-RUNTIME_TORCH = "torch"
-RUNTIME_ONNX = "onnx"
-RUNTIME_OPENVINO = "openvino"
 
 _COMPONENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -37,9 +33,8 @@ class TensorInfo(BaseModel):
 
 
 class NetworkParams(BaseModel):
-    """Parameters of 'network' components: a tensor graph stored in model files (ONNX, OpenVINO IR).
-
-    The component's input and output ports are the tensor names.
+    """Parameters of components that are a tensor graph stored in model files ('onnx_network',
+    'openvino_network'). The component's input and output ports are the tensor names.
     """
 
     precision: Precision = "fp32"
@@ -65,11 +60,15 @@ class ComponentInfo(BaseModel):
     """One step of the model graph."""
 
     name: str = Field(description="Unique name in the graph, also the folder of the component's files")
-    type: str = Field(description="What the component does, e.g. 'resize_image', 'network', 'anchor_nms'")
-    runtime: str = Field(description="How the component is expressed: 'numpy', 'torch', 'onnx', 'openvino', ...")
+    type: str = Field(
+        description=(
+            "Component definition the component is an instance of, e.g. 'resize_image', 'anchor_nms', "
+            "'onnx_network'. It names the parameters and ports, not how the component is computed"
+        )
+    )
     inputs: Dict[str, str] = Field(description="Input port (argument or tensor name) -> data dictionary key")
     outputs: Dict[str, str] = Field(description="Output port (result or tensor name) -> data dictionary key")
-    params: Dict[str, Any] = Field(default_factory=dict, description="Parameters of the component type")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Parameters of the component definition")
     files: List[str] = Field(default_factory=list, description="Files of the component, relative to the bundle")
     batched: bool = Field(
         default=False,

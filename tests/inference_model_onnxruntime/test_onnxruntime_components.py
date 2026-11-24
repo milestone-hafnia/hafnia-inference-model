@@ -22,8 +22,8 @@ def test_onnx_networks_run_on_onnxruntime_by_default(ssd, frcnn):
     for path_bundle in (ssd[2], frcnn[2]):
         model = inference_model_from_path(path_bundle)
         assert type(network_of(model)) is OnnxRuntimeNetwork
-        # Everything else is NumPy
-        assert {type(component).engine for component in model.graph.components} == {"onnxruntime", "numpy"}
+        # Everything else is written in torch
+        assert {type(component).engine for component in model.graph.components} == {"onnxruntime", "torch"}
 
 
 def test_ssd_batching(ssd, images):

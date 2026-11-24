@@ -1,20 +1,17 @@
-"""Optional NumPy helpers for classification decoders: softmax and the top-1 'Classification' primitive."""
+"""Classification components in torch: softmax and the top-1 'Classification' primitive."""
 
-from typing import List
+from typing import Any, Dict, List
 
-import numpy as np
+import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
 
-
-def softmax(logits: np.ndarray, axis: int = -1) -> np.ndarray:
-    shifted = logits.astype(np.float32) - logits.max(axis=axis, keepdims=True)
-    exp = np.exp(shifted)
-    return exp / exp.sum(axis=axis, keepdims=True)
+from inference_model_core.definitions.classification import ClassificationFromLogits
+from inference_model_torch.component import Component, register_component
 
 
 def top1_classification(
-    probabilities: np.ndarray, task: TaskInfo, score_threshold: float = 0.0
+    probabilities: torch.Tensor, task: TaskInfo, score_threshold: float = 0.0
 ) -> List[Classification]:
     """The most likely class as a 'Classification' prediction, or nothing if its probability is too low.
 
@@ -29,7 +26,7 @@ def top1_classification(
             f"Got {len(probabilities)} class probabilities for task '{task.name}' with "
             f"{0 if class_names is None else len(class_names)} classes."
         )
-    class_idx = int(np.argmax(probabilities))
+    class_idx = int(probabilities.argmax())
     confidence = float(probabilities[class_idx])
     if confidence < score_threshold:
         return []
@@ -42,3 +39,14 @@ def top1_classification(
             task_name=task.name,
         )
     ]
+
+
+@register_component
+class TorchClassificationFromLogits(Component[ClassificationFromLogits]):
+    def setup(self) -> None:
+        self.task = self.context.model_info.get_task_by_name(self.params.task_name)
+
+    def forward(self, logits: torch.Tensor) -> Dict[str, Any]:
+        probabilities = logits.to(torch.float32).softmax(dim=-1)
+        predictions = top1_classification(probabilities, task=self.task, score_threshold=self.params.score_threshold)
+        return {"predictions": predictions}

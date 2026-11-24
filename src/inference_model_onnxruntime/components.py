@@ -1,15 +1,14 @@
-"""ONNX Runtime: runs 'network' components stored as ONNX files."""
+"""ONNX Runtime: runs 'onnx_network' components in the torch graph engine."""
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 import numpy as np
 import onnxruntime as ort
-from pydantic import PrivateAttr
 
-from inference_model_core import register_component
-from inference_model_core.model_info import RUNTIME_ONNX
-from inference_model_core.network import NetworkComponent
+from inference_model_core.definitions import OnnxNetwork
+from inference_model_torch import register_component
+from inference_model_torch.network import FileNetwork
 
 ENGINE = "onnxruntime"
 
@@ -20,11 +19,8 @@ DEVICE_PROVIDERS: Dict[str, List[str]] = {
 
 
 @register_component
-class OnnxRuntimeNetwork(NetworkComponent):
-    runtime = RUNTIME_ONNX
+class OnnxRuntimeNetwork(FileNetwork[OnnxNetwork]):
     engine = ENGINE
-
-    _session: ort.InferenceSession = PrivateAttr()
 
     def load_network(self, path_model: Path) -> None:
         """Options: 'device' is 'CPU' or 'CUDA', 'num_threads' the intra-op threads."""
@@ -46,7 +42,6 @@ class OnnxRuntimeNetwork(NetworkComponent):
         self.check_graph_tensors(graph_inputs, graph_outputs, n_graph_inputs=len(graph_inputs))
         self._session = session
 
-    def forward(self, **tensors: Any) -> Dict[str, Any]:
+    def infer(self, arrays: Dict[str, np.ndarray]) -> Mapping[str, Any]:
         output_names = self.output_names
-        outputs = self._session.run(output_names, {name: np.asarray(value) for name, value in tensors.items()})
-        return dict(zip(output_names, outputs, strict=True))
+        return dict(zip(output_names, self._session.run(output_names, arrays), strict=True))

@@ -1,8 +1,9 @@
 """Test helpers: a dummy network component that runs without any inference engine installed, and detection
 matching.
 
-The dummy "network" is a JSON file with fixed detections in network input pixel coordinates. It returns those
-detections for every sample and records the shapes of the inputs it was called with.
+The dummy "network" is a JSON file with fixed detections in network input pixel coordinates. Its implementation
+on the torch graph engine returns those detections for every sample and records the shapes of the inputs it was
+called with.
 """
 
 import json
@@ -10,14 +11,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
-from pydantic import PrivateAttr
 
-from inference_model_core import Component, ConversionInfo, GraphInfo, ModelBundleInfo, write_bundle
-from inference_model_core.components import Detections, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_core import ComponentDefinition, ConversionInfo, GraphInfo, ModelBundleInfo, Port, write_bundle
+from inference_model_core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from inference_model_torch import Component
 
-DUMMY_RUNTIME = "dummy"
+DUMMY_TYPE = "dummy_network"
 DUMMY_CLASS_NAMES = ["car", "person"]
 DUMMY_INPUT_SIZE = 32
 DUMMY_NETWORK_FILE = "network/model.json"
@@ -29,52 +31,47 @@ DUMMY_DETECTIONS = {
 }
 
 
-class DummyNetwork(Component):
-    """A 'network' on the made-up runtime 'dummy'. Works batched and per sample."""
+class DummyNetworkDefinition(ComponentDefinition):
+    """A made-up network type. Works batched and per sample."""
 
-    type = "network"
-    runtime = DUMMY_RUNTIME
-    engine = DUMMY_RUNTIME
+    type = DUMMY_TYPE
+    input_ports = (Port("images", "(N, 3, H, W) or (3, H, W) images"),)
+    output_ports = (Port("boxes"), Port("scores"), Port("labels"))
 
     batch_limit: Optional[int] = None
 
-    _detections: dict = PrivateAttr()
-    _input_shapes: List[Tuple[int, ...]] = PrivateAttr(default_factory=list)
+
+class DummyNetwork(Component[DummyNetworkDefinition]):
+    """The dummy network on the made-up inference engine 'dummy'."""
+
+    engine = "dummy"
 
     def setup(self) -> None:
         assert self.context.path_dir is not None
-        self._detections = json.loads((self.context.path_dir / self.info.files[0]).read_text())
+        self.detections: dict = json.loads((self.context.path_dir / self.info.files[0]).read_text())
+        self.input_shapes: List[Tuple[int, ...]] = []  # Shapes of 'images' in the calls so far
 
     def files(self) -> Dict[str, Any]:
-        return {self.info.files[0]: json.dumps(self._detections).encode()}
+        return {self.info.files[0]: json.dumps(self.detections).encode()}
 
     @property
     def max_batch_size(self) -> Optional[int]:
-        return self.batch_limit
+        return self.params.batch_limit
 
-    @property
-    def detections(self) -> dict:
-        return self._detections
-
-    @property
-    def input_shapes(self) -> List[Tuple[int, ...]]:
-        """Shapes of 'images' in the calls so far."""
-        return self._input_shapes
-
-    def forward(self, images: np.ndarray) -> Detections:
-        self._input_shapes.append(images.shape)
-        outputs = Detections(
-            boxes=np.asarray(self._detections["boxes"], dtype=np.float32),
-            scores=np.asarray(self._detections["scores"], dtype=np.float32),
-            labels=np.asarray(self._detections["labels"], dtype=np.int64),
-        )
+    def forward(self, images: torch.Tensor) -> Dict[str, Any]:
+        self.input_shapes.append(tuple(images.shape))
+        outputs = {
+            "boxes": torch.tensor(self.detections["boxes"], dtype=torch.float32, device=images.device),
+            "scores": torch.tensor(self.detections["scores"], dtype=torch.float32, device=images.device),
+            "labels": torch.tensor(self.detections["labels"], dtype=torch.int64, device=images.device),
+        }
         if not self.info.batched:
             return outputs
-        return Detections(*(np.stack([value] * images.shape[0]) for value in outputs))
+        return {port: torch.stack([value] * images.shape[0]) for port, value in outputs.items()}
 
 
 class DummyNetworkOnOtherEngine(DummyNetwork):
-    """The same component type and runtime on another engine."""
+    """The same component type on another inference engine."""
 
     engine = "other"
 
@@ -97,7 +94,7 @@ def make_model_info(
         ImageToTensor(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]).connect(
             "to_tensor", inputs={"image": "image_resized"}, outputs={"tensor": "input_tensor"}
         ),
-        DummyNetwork(batch_limit=max_batch_size).connect(
+        DummyNetworkDefinition(batch_limit=max_batch_size).connect(
             "network",
             inputs={"images": "input_tensor"},
             outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},

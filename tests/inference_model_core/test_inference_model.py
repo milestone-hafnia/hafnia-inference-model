@@ -7,7 +7,7 @@ from hafnia.dataset.primitives import Bbox
 from helpers import DUMMY_CLASS_NAMES, make_model_info, random_image, write_dummy_bundle
 from PIL import Image
 
-from inference_model_core import GraphInferenceModel, ModelGraph, inference_model_from_path, read_model_info
+from inference_model_core import GraphInferenceModel, inference_model_from_path, load_graph, read_model_info
 
 
 def test_inference_model_from_path(tmp_path, dummy_network):
@@ -49,7 +49,7 @@ def test_graph_needs_image_input_and_predictions_output(tmp_path, dummy_network)
     model_info = make_model_info()
     graph_info = model_info.graph.model_copy(update={"outputs": ["boxes"]})
     path_bundle = write_dummy_bundle(tmp_path / "model.zip")
-    graph = ModelGraph.load(path_bundle)
+    graph = load_graph(path_bundle)
     graph.model_info = model_info.model_copy(update={"graph": graph_info})
 
     with pytest.raises(ValueError, match="needs a graph with the input 'image' and an output 'predictions'"):
