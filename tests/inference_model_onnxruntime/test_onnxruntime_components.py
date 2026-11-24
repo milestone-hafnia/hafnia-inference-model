@@ -6,9 +6,10 @@ import json
 import math
 
 import pytest
+from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import assert_detections_match, network_of
 
-from inference_model_core import GraphInferenceModel, ModelBundle
+from inference_model_core import GraphInferenceModel, ModelBundle, align_classes_recipe
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
@@ -82,7 +83,8 @@ def test_model_info_must_describe_the_onnx_graph(ssd, tmp_path):
 
 def test_hafnia_benchmark_on_micro_coco(ssd, micro_coco):
     model = GraphInferenceModel.from_path(ssd[2])
-    metrics, dataset_predictions = model.benchmark(micro_coco, batch_size=2)
+    recipe = align_classes_recipe(micro_coco, "object_detection")
+    metrics, dataset_predictions = run_benchmark(micro_coco, model, recipe_transforms=[recipe], batch_size=2)
 
     assert "object_detection/predictions" in [task.name for task in dataset_predictions.info.tasks]
     assert metrics

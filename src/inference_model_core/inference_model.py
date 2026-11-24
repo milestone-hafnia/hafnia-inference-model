@@ -7,7 +7,7 @@ engine runs them.
 """
 
 import time
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Unpack
+from typing import Dict, List, Optional, Sequence, Unpack
 
 import numpy as np
 from hafnia.dataset.benchmark.inference_model import ImageType, InferenceModel
@@ -16,9 +16,6 @@ from hafnia.dataset.primitives import Primitive
 from inference_model_core.bundle_io import PathLike
 from inference_model_core.graph import LoadSettings, ModelGraph, load_graph
 from inference_model_core.model_bundle import ModelBundle
-
-if TYPE_CHECKING:
-    from hafnia.dataset.hafnia_dataset import HafniaDataset
 
 INPUT_KEY = "image"
 OUTPUT_KEY = "predictions"
@@ -71,25 +68,6 @@ class GraphInferenceModel(InferenceModel):
 
     def get_model_info(self) -> ModelBundle:
         return self.graph.bundle
-
-    def benchmark(self, dataset: "HafniaDataset", batch_size: int = 1) -> Tuple[Dict[str, float], "HafniaDataset"]:
-        """Hafnia's benchmark ('hafnia.dataset.benchmark'): run the model on 'dataset' and compute the metrics of
-        its tasks. Returns (metrics, dataset with predictions).
-
-        The prediction classes of every model task that the dataset also has are aligned to the ground truth by
-        name: bundles have one class per model label (e.g. 91 for COCO models), datasets often fewer. Raises when
-        the ground truth has a class the model doesn't predict, as the label spaces then differ.
-        """
-        from hafnia.dataset.benchmark.benchmark import metric_calculations, run_inference_on_dataset
-
-        from inference_model_core.benchmark import align_prediction_classes
-
-        predictions = run_inference_on_dataset(dataset=dataset, model=self, batch_size=batch_size)
-        dataset_task_names = {task.name for task in dataset.info.tasks}
-        for task in self.get_model_info().tasks:
-            if task.name in dataset_task_names:
-                predictions = align_prediction_classes(predictions, task.name)
-        return metric_calculations(prediction_dataset=predictions), predictions
 
     def measure_latency(self, images: Sequence[ImageType], batch_size: int = 1, warmup: int = 10) -> Dict[str, float]:
         """Time the components of 'predict_batch' over 'images', in batches of 'batch_size'.

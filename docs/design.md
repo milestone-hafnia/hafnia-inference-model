@@ -500,11 +500,13 @@ task, and trainer archives pass through unchanged. `detections_to_bboxes` only d
 the task's classes (`task_label_mask`, for RF-DETR's "no object" column).
 
 The cost is in evaluation: Hafnia's metrics require the prediction task's class names to equal the
-ground truth's, in order. `GraphInferenceModel.benchmark` aligns the predictions to the dataset's
-classes by name before computing metrics (`align_prediction_classes` in
-`inference_model_core/benchmark.py`), removing predictions of other classes. It raises when the dataset has classes the model
-doesn't, since then the label spaces differ and a class mapping is needed. A cleaner long-term fix
-is upstream in hafnia: let the metrics ignore prediction classes the ground truth doesn't have.
+ground truth's, in order. `align_classes_recipe` (`inference_model_core/benchmark.py`) returns a
+Hafnia `ClassMapper` recipe transform for `run_benchmark` that aligns the predictions to the
+dataset's classes by name before the metrics, removing predictions of other classes. It raises
+when the dataset has classes the predictions don't, since then the label spaces differ and a class
+mapping is needed first: another `ClassMapper` before it in the `recipe_transforms`. A cleaner
+long-term fix is upstream in hafnia: let the metrics ignore prediction classes the ground truth
+doesn't have.
 
 ### Where should the change live?
 
@@ -557,7 +559,7 @@ flowchart LR
     B --> M
     D --> M
     Q --> M
-    M --> F[benchmark, measure_latency<br/>accuracy + latency per component]
+    M --> F[Hafnia's run_benchmark, measure_latency<br/>accuracy + latency per component]
 ```
 
 Only the network component changes along the way. In package-openvino, `scripts/export_to_onnx.py`
@@ -706,6 +708,13 @@ which matches training only when training resized.
 ---
 
 ## 9. Decisions
+
+**The accuracy benchmark (2026-11-25):**
+
+| Question | Decision |
+|---|---|
+| Does `GraphInferenceModel` benchmark accuracy? | **No: Hafnia's `run_benchmark` does**, as for any Hafnia `InferenceModel`. `GraphInferenceModel.benchmark` only added the alignment of the prediction classes to Hafnia's inference and metrics. The alignment is now a `ClassMapper` recipe transform from `align_classes_recipe`, so it chains with the caller's own class mappings in `run_benchmark`'s `recipe_transforms`. `measure_latency` stays a method, as it times the components inside the graph. |
+| Why a function and not a method? | **It needs only the dataset**, no bundle and no loaded model, and it returns a Hafnia recipe. A method on either class would take an argument it doesn't use. |
 
 **The `ModelBundle` interface (2026-11-24):**
 

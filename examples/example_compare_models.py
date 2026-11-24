@@ -31,13 +31,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from hafnia.dataset.benchmark.benchmark import run_benchmark
 from hafnia.dataset.hafnia_dataset import HafniaDataset
 from hafnia.dataset.hafnia_dataset_types import Sample
 from hafnia.utils import progress_bar
 from rich import print as rprint
 from rich.table import Table
 
-from inference_model_core import GraphInferenceModel, ModelBundle
+from inference_model_core import GraphInferenceModel, ModelBundle, align_classes_recipe
 
 MODELS = {
     "SSDLite320": "ssdlite320_mobilenet_v3_large",
@@ -92,6 +93,8 @@ def median_latency_ms(path_bundle: Path, engine: Optional[str], images: List[np.
 # Hafnia dataset works, e.g. 'HafniaDataset.from_name("coco-2017")'.
 dataset = HafniaDataset.from_path(PATH_DATASET)
 images = [Sample(**sample_dict).read_image() for sample_dict in dataset]
+# The models predict 91 COCO classes (incl. placeholders), the dataset has 80: align the predictions by name
+recipes = [align_classes_recipe(dataset, "object_detection")]
 
 table = Table(
     title=f"Detection models on {len(dataset)} COCO images",
@@ -111,7 +114,7 @@ for i_model_family, (model_label, model_name) in enumerate(MODELS.items()):
         # Accuracy with the bundle's default (low) score threshold, as metrics need all detections
         model = GraphInferenceModel.from_path(path_bundle, inference_engine=engine)
         with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
-            metrics, _ = model.benchmark(dataset)
+            metrics, _ = run_benchmark(dataset, model, recipe_transforms=recipes)
 
         latency_ms = median_latency_ms(path_bundle, engine, images)
         mAP = metrics["object_detection/mAP"]

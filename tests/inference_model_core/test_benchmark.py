@@ -1,7 +1,8 @@
 import pytest
+from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import write_dummy_bundle
 
-from inference_model_core import GraphInferenceModel
+from inference_model_core import GraphInferenceModel, align_classes_recipe
 
 
 @pytest.fixture
@@ -19,7 +20,8 @@ def test_prediction_classes_are_aligned_to_the_ground_truth(micro_coco, dummy_mo
     coco_class_names = micro_coco.info.get_task_by_name("object_detection").get_class_names()
     model = dummy_model(["NotDefined_000", *coco_class_names])  # Label 0 is the placeholder, label 1 'person'
 
-    metrics, predictions = model.benchmark(micro_coco)
+    recipe = align_classes_recipe(micro_coco, "object_detection")
+    metrics, predictions = run_benchmark(micro_coco, model, recipe_transforms=[recipe])
     prediction_task = predictions.info.get_task_by_name("object_detection/predictions")
     assert prediction_task.get_class_names() == coco_class_names
     predicted_names = {box["class_name"] for row in predictions.samples["bboxes"].to_list() for box in row if box}
@@ -29,5 +31,6 @@ def test_prediction_classes_are_aligned_to_the_ground_truth(micro_coco, dummy_mo
 
 
 def test_different_label_spaces_need_a_class_mapping(micro_coco, dummy_model):
-    with pytest.raises(ValueError, match="label spaces differ"):
-        dummy_model(["car", "person"]).benchmark(micro_coco)
+    recipe = align_classes_recipe(micro_coco, "object_detection")
+    with pytest.raises(ValueError, match="do not exist in the dataset task"):
+        run_benchmark(micro_coco, dummy_model(["car", "person"]), recipe_transforms=[recipe])

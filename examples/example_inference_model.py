@@ -24,14 +24,14 @@ See 'example_compare_models.py' for several models and engines benchmarked side 
 import time
 from pathlib import Path
 
-from hafnia.dataset.benchmark.benchmark import InferenceModel
+from hafnia.dataset.benchmark.benchmark import InferenceModel, run_benchmark
 from hafnia.dataset.hafnia_dataset import HafniaDataset, Primitive
 from hafnia.dataset.hafnia_dataset_types import Sample
 from hafnia.dataset.image_visualizations import draw_annotations
 from PIL import Image
 from rich import print as rprint
 
-from inference_model_core import GraphInferenceModel, ModelBundle
+from inference_model_core import GraphInferenceModel, ModelBundle, align_classes_recipe
 
 t0 = time.time()
 ##### PREPARE EXAMPLE #####
@@ -44,6 +44,8 @@ path_dataset = Path(__file__).parents[1] / "tests" / "data" / "micro-coco-2017"
 dataset = HafniaDataset.from_path(path_dataset)
 sample = Sample(**dataset[4])
 image = sample.read_image()
+
+align_class_names = [align_classes_recipe(dataset, "object_detection")]
 ##########################
 
 # 1) Write a pretrained torchvision model as a model bundle (with a torch network) and convert it to an ONNX
@@ -85,9 +87,11 @@ rprint(f"5) Visualization saved to '{path_visualization}'")
 # 6) Every model implements Hafnia's 'InferenceModel', so Hafnia's benchmark runs on it: it predicts on
 # all samples, stores the predictions as a new task in a copy of the dataset and computes metrics against
 # the ground truth. Load the model with the bundle's default (low) score threshold, as metrics need all
-# detections, not only the confident ones. A bundle on disk loads the same way from its path.
+# detections, not only the confident ones. A bundle on disk loads the same way from its path. The model
+# predicts 91 COCO classes (incl. placeholders) and the dataset has 80, so a recipe transform aligns the
+# predictions to the dataset's classes by name.
 model_benchmark = GraphInferenceModel.from_path(path_openvino)
-metrics, dataset_predictions = model_benchmark.benchmark(dataset)
+metrics, dataset_predictions = run_benchmark(dataset, model_benchmark, recipe_transforms=align_class_names)
 rprint(f"6) Benchmark metrics: {metrics}")
 
 t1 = time.time()
