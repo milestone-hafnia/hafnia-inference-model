@@ -121,7 +121,7 @@ the bundle, or when a definition is connected into a graph.
 
 A component has two parts, in two packages.
 
-**The definition** (`inference_model_core`) says what a component of a type is. It is a pydantic
+**The definition** (`hafnia_inference_model.core`) says what a component of a type is. It is a pydantic
 model: its fields are the parameters stored as `params` in the model info, and it declares the
 ports. It holds no implementation and imports no tensor library.
 
@@ -147,7 +147,7 @@ class ResizeImage(ComponentDefinition):
 - The ports of a network stored in model files are its tensor names, which are parameters
   (`NetworkDefinition.ports()`).
 
-**The implementation** (`inference_model_torch`, the engine packages, `model_exporters`) computes a
+**The implementation** (`hafnia_inference_model.torch`, the engine packages, `hafnia_inference_model.exporters`) computes a
 definition on the torch graph engine. `Component[<definition>]` names the definition, `self.params`
 is the validated definition of the component, and the parameters of `forward` are the input ports.
 It returns the outputs by port name.
@@ -165,22 +165,22 @@ class TorchResizeImage(Component[ResizeImage]):
   exactly the input ports of its definition is an error, so the two can't drift apart.
 - Model files and the task of the model info are read in `setup()`, when the graph is loaded.
 - The implementations of the standard components are thin classes around functions on tensors
-  (`inference_model_torch/components/`), which are tested on their own.
+  (`hafnia_inference_model/torch/components/`), which are tested on their own.
 
 | Definition (type) | Defined in | Implementation | Inference engine |
 |---|---|---|---|
-| `load_image`, `resize_image`, `image_to_tensor` | `inference_model_core/definitions/image.py` | `inference_model_torch/components/image.py` | torch |
-| `anchor_nms`, `query_topk`, `detections_to_bboxes` | `inference_model_core/definitions/detection.py` | `inference_model_torch/components/detection.py` | torch |
-| `classification_from_logits` | `inference_model_core/definitions/classification.py` | `inference_model_torch/components/classification.py` | torch |
-| `onnx_network` | `inference_model_core/definitions/network.py` | `inference_model_onnxruntime/components.py` | onnxruntime |
-| `onnx_network` (alternative) | | `inference_model_openvino/components.py` | openvino |
-| `openvino_network` | `inference_model_core/definitions/network.py` | `inference_model_openvino/components.py` | openvino |
-| `torchvision_ssd_network`, `torchvision_faster_rcnn`, `torchvision_classifier`, `rfdetr_network` | `model_exporters/definitions.py` | the family modules of `model_exporters` | torch |
+| `load_image`, `resize_image`, `image_to_tensor` | `hafnia_inference_model/core/definitions/image.py` | `hafnia_inference_model/torch/components/image.py` | torch |
+| `anchor_nms`, `query_topk`, `detections_to_bboxes` | `hafnia_inference_model/core/definitions/detection.py` | `hafnia_inference_model/torch/components/detection.py` | torch |
+| `classification_from_logits` | `hafnia_inference_model/core/definitions/classification.py` | `hafnia_inference_model/torch/components/classification.py` | torch |
+| `onnx_network` | `hafnia_inference_model/core/definitions/network.py` | `hafnia_inference_model/onnxruntime/components.py` | onnxruntime |
+| `onnx_network` (alternative) | | `hafnia_inference_model/openvino/components.py` | openvino |
+| `openvino_network` | `hafnia_inference_model/core/definitions/network.py` | `hafnia_inference_model/openvino/components.py` | openvino |
+| `torchvision_ssd_network`, `torchvision_faster_rcnn`, `torchvision_classifier`, `rfdetr_network` | `hafnia_inference_model/exporters/definitions.py` | the family modules of `hafnia_inference_model.exporters` | torch |
 
 - **No `runtime` per component.** What a component is stored as follows from its type: an
   `onnx_network` is an ONNX file, an `openvino_network` is OpenVINO IR. Both take and return torch
   tensors and pass them to their inference engine as NumPy arrays, without a copy on the CPU
-  (`FileNetwork` in `inference_model_torch/network.py`).
+  (`FileNetwork` in `hafnia_inference_model/torch/network.py`).
 - **A type has one default implementation and can have alternatives** on another inference engine,
   chosen at load time with `inference_engine`. The only one today: an ONNX network on OpenVINO
   instead of ONNX Runtime.
@@ -351,7 +351,7 @@ bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_tor
 The names are the entry points of the group `hafnia.inference_model_pretrained_models`, one per
 model. Each points at a function `(name, path_bundle, overwrite) -> ModelBundle` of a model family
 (7.1), which is imported only when one of its models is asked for. So `resnet18` needs torch and
-torchvision but not `rfdetr`, listing the names imports nothing, and `inference_model_core` stays free
+torchvision but not `rfdetr`, listing the names imports nothing, and `hafnia_inference_model.core` stays free
 of torch. A missing dependency gives an error that names the model and the function, and a name that
 two packages register is an error too. Another package adds its models to the same group. Unlike
 `from_path`, `from_pretrained` creates the bundle: it downloads the weights on first use and writes
@@ -380,9 +380,9 @@ bundle_onnx.convert("openvino_int8", "model_int8.zip", calibration_inputs=[{"ima
 
   | Converter | Result | Where |
   |---|---|---|
-  | a torch network type → `onnx` | `onnx_network` | `inference_model_torch/convert.py`, calling the implementation's `export_onnx`. Registered once for all families, as `*/onnx` |
-  | `onnx_network` → `openvino` (FP32 or FP16) | `openvino_network` | `inference_model_openvino/convert.py` |
-  | `onnx_network`, `openvino_network` → `openvino_int8` | `openvino_network` | `inference_model_openvino/convert.py` (NNCF) |
+  | a torch network type → `onnx` | `onnx_network` | `hafnia_inference_model/torch/convert.py`, calling the implementation's `export_onnx`. Registered once for all families, as `*/onnx` |
+  | `onnx_network` → `openvino` (FP32 or FP16) | `openvino_network` | `hafnia_inference_model/openvino/convert.py` |
+  | `onnx_network`, `openvino_network` → `openvino_int8` | `openvino_network` | `hafnia_inference_model/openvino/convert.py` (NNCF) |
 
 - **Chains are found automatically**: a torch bundle converts to `openvino_int8` through
   torch network → `onnx_network` → `openvino_int8`, as long as the component lists every step.
@@ -404,10 +404,10 @@ bundle_onnx.convert("openvino_int8", "model_int8.zip", calibration_inputs=[{"ima
 
 The interface is not repeated here, as a copy goes stale with every change: the usage is in the
 [README](../README.md#usage), and the arguments are in the docstrings of `ModelBundle`,
-`GraphInferenceModel` and `LoadSettings` (`src/inference_model_core`) and of `Component`
-(`src/inference_model_torch/component.py`).
+`GraphInferenceModel` and `LoadSettings` (`src/hafnia_inference_model/core`) and of `Component`
+(`src/hafnia_inference_model/torch/component.py`).
 
-Two base classes that implementations of networks build on (`inference_model_torch/network.py`):
+Two base classes that implementations of networks build on (`hafnia_inference_model/torch/network.py`):
 
 - `FileNetwork` is the base class of networks in model files: it compares the model info with the
   stored graph at load time, and converts between torch tensors and the arrays of the inference
@@ -419,7 +419,7 @@ Two base classes that implementations of networks build on (`inference_model_tor
 
 ## 4. Model info schema
 
-Implemented as `ModelBundle(ModelInfo)` in `src/inference_model_core/model_bundle.py`, format
+Implemented as `ModelBundle(ModelInfo)` in `src/hafnia_inference_model/core/model_bundle.py`, format
 version `3.0.0`. A bundle of another major version is rejected with a message to create it again.
 
 ```python
@@ -494,14 +494,14 @@ object" last.
 
 The bundle helpers put every model label in the task, with unique placeholder names for labels
 without a class: `NotDefined_000`, `NotDefined_012`, ..., the convention of
-trainer-object-detection's archives (`model_exporters/class_names.py`). Label = class index, so no
+trainer-object-detection's archives (`hafnia_inference_model/exporters/class_names.py`). Label = class index, so no
 mapping is needed at inference. COCO models (SSD, Faster R-CNN, RF-DETR) carry the same 91-class
 task, and trainer archives pass through unchanged. `detections_to_bboxes` only drops labels beyond
 the task's classes (`task_label_mask`, for RF-DETR's "no object" column).
 
 The cost is in evaluation: Hafnia's metrics require the prediction task's class names to equal the
 ground truth's, in order. The recipe transform `AlignPredictionClasses`
-(`inference_model_core/benchmark.py`) aligns them in `run_benchmark`, matching classes by name.
+(`hafnia_inference_model/core/benchmark.py`) aligns them in `run_benchmark`, matching classes by name.
 It handles any model that predicts every class of the dataset: additional classes are removed with
 their predictions, and the classes are put in the ground truth's order. It raises when the dataset
 has classes the predictions don't, since then the label spaces differ and a class mapping is
@@ -520,9 +520,11 @@ iteration (Q5).
 
 ## 5. Package layout
 
-The brief asks for concepts to be separated now so they can move to their own repos later.
-The cleanest way: **several top-level Python packages inside one distribution.** When a
-module later moves to its own repo, import paths stay the same.
+One package, `hafnia_inference_model`, with a subpackage per concept: `core`, `torch`,
+`onnxruntime`, `openvino` and `exporters` (since 2026-11-25, see [section 9](#9-decisions)). The
+package re-exports `ModelBundle` and `GraphInferenceModel` from `core`. The extras keep the
+dependencies of the subpackages apart, and the entry points let a separate package add components,
+converters and pretrained models.
 
 Since 2026-11-24 this library is its own distribution, `hafnia-inference-model`, and since 2026-11-25
 its own repository (see [section 9](#9-decisions)). The trainer package depends on it, never the other
@@ -531,17 +533,17 @@ way round.
 The [README](../README.md#layout) lists what each package is for. The repository itself is the
 file tree.
 
-Test file names are unique across folders: the folders have no `__init__.py` (a
-`tests/inference_model_core` package would shadow the real one), so pytest imports test files by
-their base name.
+Test file names are unique across folders: the folders have no `__init__.py`, so pytest imports
+test files by their base name. The folders are named `test_<subpackage>`: a folder `tests/torch` or
+`tests/openvino` would shadow the real package for mypy.
 
 Dependency rules:
 
-- `inference_model_core` imports **no** inference engine and **no** torch when it is imported
+- `hafnia_inference_model.core` imports **no** inference engine and **no** torch when it is imported
   (tested). `load_graph` imports the torch graph engine inside the function, when a graph is loaded.
-- `inference_model_torch` imports `inference_model_core`, torch and torchvision (for NMS).
-- The inference engine packages import `inference_model_core` and `inference_model_torch`, never each
-  other. `inference_model_openvino.convert` reads ONNX with OpenVINO itself, not through ONNX Runtime.
+- `hafnia_inference_model.torch` imports `hafnia_inference_model.core`, torch and torchvision (for NMS).
+- The inference engine packages import `hafnia_inference_model.core` and `hafnia_inference_model.torch`, never each
+  other. `hafnia_inference_model.openvino.convert` reads ONNX with OpenVINO itself, not through ONNX Runtime.
 - **Running any graph needs torch** (accepted on 2026-11-23). Describing, writing, reading and
   checking a bundle does not.
 - Optional dependency groups (`onnxruntime`, `openvino`, `torch`, `rfdetr`) keep each split honest
@@ -577,7 +579,7 @@ same dataset is the main way to confirm that conversion and quantization didn't 
 
 The scripts that run these steps on the Hafnia platform are package-openvino's.
 
-### 7.1 Model families (`model_exporters`)
+### 7.1 Model families (`hafnia_inference_model.exporters`)
 
 Each family module has the torch component of its network and functions that write a bundle with
 that network: `create_torchvision_detection_bundle`, `create_torchvision_classification_bundle`,
@@ -710,6 +712,15 @@ which matches training only when training resized.
 
 ## 9. Decisions
 
+**One package with subpackages (2026-11-25):**
+
+| Question | Decision |
+|---|---|
+| Rename the five top-level packages? | **Yes, to subpackages of `hafnia_inference_model`**, while the trainer package is still the only code that imports them: `inference_model_core` → `.core`, `inference_model_torch` → `.torch`, `inference_model_onnxruntime` → `.onnxruntime`, `inference_model_openvino` → `.openvino`, `model_exporters` → `.exporters`. Five generic top-level names in a public library could clash with other packages, and none matched the distribution's name. They were separate so each could move to its own repository; the extras and the entry points already keep them apart. Bundles store component types, not module paths, so existing bundles still load. No aliases for the old names. |
+| Subpackages named after their dependencies? | **Yes** (`torch`, `onnxruntime`, `openvino`), as Hugging Face Optimum does (`optimum.onnxruntime`). Absolute imports inside them still find the real packages. |
+| A regular package or a namespace package? | **Regular**, so `from hafnia_inference_model import ModelBundle, GraphInferenceModel` works. Its `__init__.py` imports only `core`. A namespace package would allow a subpackage to become a distribution of its own under the same name, which the entry points make unnecessary. |
+| Rename the entry point groups? | **No.** `hafnia.inference_model_components` and the others name groups, not modules; only the module paths in their values changed. |
+
 **Its own repository (2026-11-25):**
 
 | Question | Decision |
@@ -734,8 +745,8 @@ which matches training only when training resized.
 | What is a `ModelBundle`? | **The description and the place of its files.** `ModelBundleInfo` was only the content of `model_info.json`. The place is not stored and not compared. The file is still named `model_info.json`, and Hafnia's `get_model_info()` returns the bundle. |
 | Folder or zip? | **Reading detects it, writing follows the suffix** (2026-11-24, replacing `write_zip` and `from_zip` of the same day). `from_path` reads a folder or a zip. Every function that writes a bundle (`write`, `convert`, `from_pretrained`, the bundle helpers) takes one path: ending with `.zip` it writes a zip, otherwise a folder. Two rules for the same question (explicit methods next to the suffix) were one too many. |
 | How does a bundle become an inference model? | **`GraphInferenceModel.from_bundle(bundle)`**, with `from_path(path)` as the shorthand for a bundle on disk. A `ModelBundle` has no `load()`: that would be a second way, and the bundle definition would depend on the inference model. |
-| What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `convert`, `from_pretrained` and the bundle helpers of `model_exporters`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
-| How is a pretrained model written by name? | **`ModelBundle.from_pretrained(name, path_bundle)`**, with `list_pretrained()` for the names. It replaces `create_pretrained_bundle` and `pretrained_model_names` of `model_exporters.registry`. Each model name is an entry point (`hafnia.inference_model_pretrained_models`) that is imported only when used, so a model only needs the dependencies of its own framework, `inference_model_core` stays torch free and another package adds its own models. Names are flat (`resnet18`), and a name registered by two packages is an error. The path is required: a cache folder can be added later. |
+| What does a function that writes a bundle return? | **The written `ModelBundle`**, not a path: `write`, `convert`, `from_pretrained` and the bundle helpers of `hafnia_inference_model.exporters`. The result is converted or loaded directly, and `bundle.path` gives the path. The path argument stays required, as a `ModelBundle` holds no file contents in memory. |
+| How is a pretrained model written by name? | **`ModelBundle.from_pretrained(name, path_bundle)`**, with `list_pretrained()` for the names. It replaces `create_pretrained_bundle` and `pretrained_model_names` of `hafnia_inference_model.exporters.registry`. Each model name is an entry point (`hafnia.inference_model_pretrained_models`) that is imported only when used, so a model only needs the dependencies of its own framework, `hafnia_inference_model.core` stays torch free and another package adds its own models. Names are flat (`resnet18`), and a name registered by two packages is an error. The path is required: a cache folder can be added later. |
 | Where are the load settings defined? | **Once, in `LoadSettings`** (2026-11-24). `from_path`, `from_bundle`, `load_graph` and `TorchModelGraph.load` each listed the same six arguments and passed them on. They now take `**load_settings: Unpack[LoadSettings]`: calls look the same, a type checker still checks the names and types, and an unknown setting is a `TypeError` at run time. Settings are keyword only. |
 | How many places name a component, converter or model? | **One each, plus the entry point that makes it findable** (2026-11-24). (1) Every torch network converts to ONNX through the single entry `*/onnx`, where `*` is any component type without a converter of its own, instead of one entry per network type. (2) The table of trainer models is gone: a trainer archive's model name is looked up among the pretrained entry points, and the family module has a `create_trainer_archive_bundle` function if it reads archives. (3) Components and converters of installed packages are registered by their entry point only, without a decorator, and checked when first needed. Per-component entry points stay: one entry per package would import every package to find one type. The pretrained names stay in `pyproject.toml` too, as listing them without importing torch needs static metadata; a test keeps them in step with the family tables. |
 | Is the graph engine pluggable? | **No** (2026-11-24). Torch runs every graph, and `load_graph` imports `TorchModelGraph` directly. The entry point group `hafnia.inference_model_graph_engines`, the `graph_engine` setting and `list_graph_engines` are removed. They promised a second engine that could not be plugged in: the ONNX Runtime and OpenVINO packages import the torch engine, the component registry is torch's, and calibration yields torch tensors. `ModelGraph` stays as the type of a loaded graph, as the core can not import the torch class without importing torch. If bundles have to run without torch, the plan is to fold preprocessing into the converted network and keep NumPy implementations of the few post-processing components, with a seam designed for that. |
@@ -747,7 +758,7 @@ which matches training only when training resized.
 
 | Question | Decision |
 |---|---|
-| Where is a component defined, and where implemented? | **Separately.** The bundle definition (`inference_model_core`) has a definition per component type: parameters and declared ports. The graph engine has the implementations. Replaces the single class with `forward` of 2026-11-20. |
+| Where is a component defined, and where implemented? | **Separately.** The bundle definition (`hafnia_inference_model.core`) has a definition per component type: parameters and declared ports. The graph engine has the implementations. Replaces the single class with `forward` of 2026-11-20. |
 | What runs the graph? | **A torch graph engine**, the only one in this version. Implementations depend on the graph engine. |
 | How are tensors exchanged? | **As `torch.Tensor`s**, also by the ONNX and OpenVINO networks, which convert at their boundary. Replaces NumPy arrays. A torch graph then runs at native speed on a GPU. |
 | Does a component have a runtime? | **No.** ONNX and OpenVINO networks are component types (`onnx_network`, `openvino_network`). Converters are keyed by type. |

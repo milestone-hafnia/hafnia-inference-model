@@ -1,7 +1,7 @@
 # Design review: package-openvino
 
 Date: 2026-11-18
-Reviewed: [design.md](design.md) and `src/inference_model_core/` (steps 1–2), before step 3 starts.
+Reviewed: [design.md](design.md) and `src/hafnia_inference_model/core/` (steps 1–2), before step 3 starts.
 
 > **Status:** points 1, 2, 3, 4.1 and the 4.5 `uint8` fix were applied on 2026-11-18, together with
 > step 3 (see design.md section 11). 4.2 (FP16) was applied with step 4. The other points are open.

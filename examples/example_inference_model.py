@@ -31,7 +31,8 @@ from hafnia.dataset.image_visualizations import draw_annotations
 from PIL import Image
 from rich import print as rprint
 
-from inference_model_core import AlignPredictionClasses, GraphInferenceModel, ModelBundle
+from hafnia_inference_model import GraphInferenceModel, ModelBundle
+from hafnia_inference_model.core import AlignPredictionClasses
 
 t0 = time.time()
 ##### PREPARE EXAMPLE #####
