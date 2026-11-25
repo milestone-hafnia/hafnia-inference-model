@@ -388,6 +388,10 @@ bundle_onnx.convert("openvino_int8", "model_int8.zip", calibration_inputs=[{"ima
   torch network → `onnx_network` → `openvino_int8`, as long as the component lists every step.
 - **Processing components are not converted.** `load_image` and `resize_image` stay torch. Converting
   processing components to ONNX, and merging them into the network, is optional later work.
+- **INT8 quantizes the converted IR.** An `onnx_network` is converted with `ov.convert_model` as for
+  `openvino` before NNCF runs, as Ultralytics and OpenVINO's own tools do. Read as is, its graph still
+  has e.g. SiLU as sigmoid and multiply, where NNCF placed more quantizers. The ignore patterns are
+  ONNX node names, which the conversion keeps.
 - **Calibration is generic.** For targets that calibrate, the caller passes graph inputs of
   representative samples. Each converted component gets what it gets at inference: the samples are
   run through the source graph up to that component. No model specific calibration code exists.
@@ -711,6 +715,13 @@ which matches training only when training resized.
 ---
 
 ## 9. Decisions
+
+**INT8 from the converted IR (2026-11-25):**
+
+| Question | Decision |
+|---|---|
+| Quantize an ONNX network as read, or converted to IR first? | **Converted first** (`ov.convert_model`, as for the `openvino` target). `ov.Core().read_model` of the ONNX file kept SiLU as sigmoid and multiply, and NNCF placed more quantizers (YOLO11n: 262 vs 101). Measured on the first 100 COCO val2017 images, 300 train2017 calibration images, CPU: YOLO11n/s INT8 0.9-1.5 points lower mAP50-95 and 22-30% slower; SSDLite320 and Faster R-CNN 320 the same mAP within 0.001 and 14-17% slower (SSD 8.0 vs 6.6 ms, Faster R-CNN 11.3 vs 9.6 ms for the network). |
+| Is torch → ONNX → OpenVINO as good as converting torch directly (Ultralytics' route)? | **Yes**, checked on YOLO11n and YOLO11s with the same NNCF settings and calibration: the compiled networks have the same layers and precisions, the outputs are identical (largest difference 0.0) in FP32 and INT8, and the latency is the same within 1%. What matters for INT8 is which nodes stay in float, not the route. Ultralytics is not supported, as its AGPL-3.0 license does not fit this repository. |
 
 **One package with subpackages (2026-11-25):**
 

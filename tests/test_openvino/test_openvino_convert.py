@@ -17,6 +17,8 @@ from hafnia_inference_model.core import AlignPredictionClasses, GraphInferenceMo
 
 pytest.importorskip("torch")
 pytest.importorskip("nncf")
+import openvino as ov
+
 from hafnia_inference_model.openvino.components import OpenVINOIRNetwork
 
 pytestmark = pytest.mark.slow
@@ -168,6 +170,20 @@ def test_quantize_openvino_ir_bundle(ssd_ir, images, tmp_path):
         2,
     )
     assert GraphInferenceModel.from_path(path_int8).predict(images[0])
+
+
+def test_quantize_onnx_as_converted_ir(ssd_int8, ssd_ir, images, tmp_path):
+    """An ONNX network is quantized as its converted IR. Read as is, NNCF placed more quantizers in its graph,
+    which made INT8 networks slower and less accurate."""
+    path_from_ir = quantize(ssd_ir, tmp_path / "from_ir.zip", images)
+    assert n_fake_quantize(ssd_int8) == n_fake_quantize(path_from_ir)
+
+
+def n_fake_quantize(path_bundle) -> int:
+    with zipfile.ZipFile(path_bundle) as archive:
+        weights = np.frombuffer(archive.read("network/model.bin"), np.uint8)
+        model = ov.Core().read_model(archive.read("network/model.xml"), ov.Tensor(weights))
+    return sum(op.get_type_name() == "FakeQuantize" for op in model.get_ordered_ops())
 
 
 def test_resnet18_int8_agrees_with_fp32(resnet18, resnet18_ir, images, tmp_path):

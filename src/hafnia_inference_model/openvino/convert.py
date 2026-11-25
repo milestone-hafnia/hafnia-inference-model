@@ -64,8 +64,7 @@ def quantize_to_openvino_int8(request: ConversionRequest) -> ComponentInfo:
     if model_type not in (None, "transformer"):
         raise ValueError(f"'model_type' must be 'transformer' or None, got '{model_type}'.")
 
-    # Reads ONNX and OpenVINO IR
-    model = ov.Core().read_model(request.path_source_dir / component.files[0])
+    model = _read_for_quantization(request)
     # 'validate=False': a pattern may match nothing after conversion, which is not an error
     ignored_scope = nncf.IgnoredScope(patterns=ignored_patterns, validate=False) if ignored_patterns else None
     quantized_model = nncf.quantize(
@@ -85,6 +84,15 @@ def quantize_to_openvino_int8(request: ConversionRequest) -> ComponentInfo:
         "model_type": model_type,
     }
     return _write_ir_component(request, quantized_model, "int8", {"quantization": quantization})
+
+
+def _read_for_quantization(request: ConversionRequest) -> ov.Model:
+    """An ONNX network is converted as for 'openvino' first. Read as is, its graph still has e.g. SiLU as sigmoid
+    and multiply, where NNCF places more quantizers: YOLO11 had 0.9-1.5 points lower mAP and was 22-30% slower."""
+    path_model = request.path_source_dir / request.component.files[0]
+    if request.component.type == ONNX_NETWORK_TYPE:
+        return ov.convert_model(path_model)
+    return ov.Core().read_model(path_model)
 
 
 class _Reiterable:
