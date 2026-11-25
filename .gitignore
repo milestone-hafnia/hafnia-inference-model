@@ -175,6 +175,3 @@ mlflow.db
 .data/
 mlruns/
 local_stuff/
-# Hafnia trainer build artifacts
-trainer.zip
-state.json

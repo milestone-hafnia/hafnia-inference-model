@@ -5,8 +5,8 @@ graph of components. This library writes bundles from pretrained models and trai
 (torch → ONNX → OpenVINO IR → INT8), and runs any bundle through one `InferenceModel` interface that always
 returns Hafnia primitives, so models can be visualized, benchmarked and served the same way.
 
-The Hafnia trainer package [package-openvino](../README.md) uses it, and explains where bundles come from and
-why only the bundle crosses from a user's trainer package. See [docs/design.md](docs/design.md) for the design
+The Hafnia trainer package package-openvino installs it from this repository to export, convert and benchmark
+bundles on the Hafnia platform. See [docs/design.md](docs/design.md) for the design
 and decisions.
 
 ## Inside a bundle: definition and implementation
@@ -94,6 +94,9 @@ automatically.
 |---|---|---|
 | `micro-coco-2017` | `coco-2017-tiny` 1.0.0 (20 samples) | 8, seed 0 |
 
+The images and annotations of `micro-coco-2017` come from [COCO](https://cocodataset.org) (annotations
+CC BY 4.0, images under their Flickr licenses).
+
 ```bash
 uv run python tests/micro_datasets.py          # Create missing micro datasets
 uv run python tests/micro_datasets.py --force  # Recreate all of them
@@ -101,10 +104,8 @@ uv run python tests/micro_datasets.py --force  # Recreate all of them
 
 ## Development
 
-The library is a member of the package-openvino uv workspace: `uv sync` in the workspace root installs it with
-all extras and the dev group. Run the commands in this folder:
-
 ```bash
+uv sync --all-extras         # Install with all extras and the dev group
 uv run pytest                # Run all tests (the first run downloads pretrained torchvision weights)
 uv run pytest -m "not slow"  # Skip the end-to-end export tests
 uv run pytest tests/inference_model_openvino  # Tests of one module (one folder per module under src/)

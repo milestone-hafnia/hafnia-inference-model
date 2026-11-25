@@ -1,8 +1,8 @@
 # hafnia-inference-model
 
 The model bundle library: it writes bundles, converts them to OpenVINO and runs any bundle through one
-`InferenceModel` interface that returns Hafnia primitives. It is a member of the package-openvino uv workspace
-(`../`) until it moves to its own repository. [README.md](README.md) has the usage,
+`InferenceModel` interface that returns Hafnia primitives. The Hafnia trainer package
+package-openvino installs it from this repository. [README.md](README.md) has the usage,
 [docs/design.md](docs/design.md) the design and the decisions with dates.
 
 ## Concept
@@ -41,7 +41,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 ## Rules
 
-- Nothing here imports `package_openvino` or knows about the trainer package's scripts.
+- Nothing here knows about a trainer package that uses the library, or its scripts.
 - The user interface is two classes, `ModelBundle` and `GraphInferenceModel`. New functionality is a method
   on one of them, not a module-level function that does the same. The exception is a Hafnia recipe transform
   that needs neither class, such as `AlignPredictionClasses`.
@@ -55,7 +55,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 - A component type has one definition and one default implementation. An alternative implementation is
   registered as `<type>/<inference engine>` and chosen with `inference_engine=` at load time.
 - Implementations and converters outside the standard components are registered as entry points in
-  this folder's `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`),
+  `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`),
   and only there: no `@register_component` or `@register_converter` on them. Run `uv sync` after changing them.
 - A new torch network needs no converter entry: `*/onnx` converts every torch network to ONNX.
 - A model family that reads trainer archives has a `create_trainer_archive_bundle` function in the module its
@@ -73,9 +73,8 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 ## Commands
 
-Run them in this folder. `uv sync` in the workspace root installs the library with all extras and the dev group.
-
 ```bash
+uv sync --all-extras                    # Install with all extras and the dev group
 uv run pytest                           # All tests, about 7 minutes
 uv run pytest -m "not slow"             # Skip the end-to-end export tests
 uv run pytest tests/inference_model_torch  # One module (one tests folder per package under src/)

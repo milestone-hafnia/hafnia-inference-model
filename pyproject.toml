@@ -3,6 +3,8 @@ name = "hafnia-inference-model"
 version = "0.1.0"
 description = "Model bundles: describe a model as a graph of components, convert it to OpenVINO and run any bundle"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "hafnia>=0.8.7",
@@ -10,11 +12,17 @@ dependencies = [
     "pydantic>=2.10.4",
 ]
 
+[project.urls]
+Repository = "https://github.com/milestone-hafnia/hafnia-inference-model"
+
 [project.optional-dependencies]
 torch = ["onnx>=1.17.0", "torch==2.10.0", "torchvision==0.25.0"]
 onnxruntime = ["onnxruntime>=1.26.0"]
 openvino = ["nncf>=2.19.0", "openvino>=2025.3.0"]
 rfdetr = ["rfdetr==1.8.1"]  # RF-DETR bundles (model_exporters.rfdetr_detection), with the torch extra
+
+[dependency-groups]
+dev = ["cyclopts==4.5.1", "mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]  # cyclopts: tests/micro_datasets.py
 
 # Engine and model family dependencies are optional extras, so each module (and later each repo) only pulls
 # in what it needs:
@@ -72,8 +80,6 @@ packages = [
     "src/model_exporters",
 ]
 
-# The tool settings are the same as in the workspace root (package-openvino), so the library stays
-# self-contained when it moves to its own repo. The dev tools come from the root's dev group for now.
 [tool.ruff]
 extend-include = ["*.ipynb"]
 line-length = 120

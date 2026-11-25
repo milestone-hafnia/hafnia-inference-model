@@ -5,10 +5,10 @@ repos:
     - id: ruff
       types_or: [python, pyi]
       args: [--fix]
-      files: ^(src|tests)/
+      files: ^(src|tests|examples)/
     - id: ruff-format
       types_or: [python, pyi]
-      files: ^(src|tests)/
+      files: ^(src|tests|examples)/
 - repo: https://github.com/astral-sh/uv-pre-commit
   rev: 0.6.17
   hooks:

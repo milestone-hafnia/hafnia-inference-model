@@ -524,9 +524,9 @@ The brief asks for concepts to be separated now so they can move to their own re
 The cleanest way: **several top-level Python packages inside one distribution.** When a
 module later moves to its own repo, import paths stay the same.
 
-Since 2026-11-24 this library is its own distribution, `hafnia-inference-model`, a member of the
-package-openvino uv workspace until it moves to its own repo. The trainer package depends on it, never
-the other way round. Why and when it moves: package-openvino's [design](../../docs/design.md#decisions).
+Since 2026-11-24 this library is its own distribution, `hafnia-inference-model`, and since 2026-11-25
+its own repository (see [section 9](#9-decisions)). The trainer package depends on it, never the other
+way round.
 
 The [README](../README.md#layout) lists what each package is for. The repository itself is the
 file tree.
@@ -575,8 +575,7 @@ same dataset is the main way to confirm that conversion and quantization didn't 
 
 ## 7. Model families
 
-The scripts that run these steps on the Hafnia platform are package-openvino's, see its
-[design](../../docs/design.md).
+The scripts that run these steps on the Hafnia platform are package-openvino's.
 
 ### 7.1 Model families (`model_exporters`)
 
@@ -710,6 +709,15 @@ which matches training only when training resized.
 ---
 
 ## 9. Decisions
+
+**Its own repository (2026-11-25):**
+
+| Question | Decision |
+|---|---|
+| Why a repository of its own? | **So any trainer package can install the library.** It lived in package-openvino, from 2026-11-24 as a member of a uv workspace. Splitting needed only a way for the Docker build of a `trainer.zip` to install it; that package-openvino's scripts still import some submodules does not block it, as the trainer pins a version. |
+| How do trainer packages install it? | **From this public repository, pinned to a commit** (`rev` in `[tool.uv.sources]`). No tags, releases or package index for now. The repository is public so the platform's Docker build needs no credentials. Locally, a trainer package can install a checkout in editable mode instead. |
+| What history does it keep? | **The library's files back to the first commit of package-openvino**, filtered with `git filter-repo`. Files that were shared with the trainer package (README, design, `pyproject.toml`) keep their history up to the split, then continue as the library's. |
+| License | **MIT**, as the `hafnia` SDK. |
 
 **The accuracy benchmark (2026-11-25):**
 
