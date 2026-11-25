@@ -65,7 +65,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 | Package | Purpose |
 |---|---|
-| `inference_model_core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), the interface of a loaded graph (`GraphInferenceModel` with its latency benchmark, `load_graph`), and the recipe that aligns prediction classes for Hafnia's accuracy benchmark. No implementations, torch free. |
+| `inference_model_core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), the interface of a loaded graph (`GraphInferenceModel` with its latency benchmark, `load_graph`), and `AlignPredictionClasses`, the recipe transform that aligns prediction classes for Hafnia's accuracy benchmark. No implementations, torch free. |
 | `inference_model_torch` | The torch graph engine: `TorchModelGraph` (the executor), the implementations of the standard definitions in torch, the base classes of networks, and the converter torch → ONNX |
 | `inference_model_onnxruntime` | Runs `onnx_network` components on ONNX Runtime, inside the torch graph engine |
 | `inference_model_openvino` | Runs `openvino_network` (and on request `onnx_network`) components on OpenVINO, inside the torch graph engine. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
@@ -118,7 +118,7 @@ uv run mypy src tests examples                # Type check
 ```python
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 
-from inference_model_core import GraphInferenceModel, ModelBundle, align_classes_recipe
+from inference_model_core import AlignPredictionClasses, GraphInferenceModel, ModelBundle
 
 # Write a pretrained model as a bundle with a torch network, and convert it
 print(ModelBundle.list_pretrained())  # The names. A model only needs the dependencies of its own framework
@@ -149,9 +149,9 @@ model = GraphInferenceModel.from_path(
 primitives = model.predict(image)  # List[Primitive], e.g. Bbox predictions
 
 # Benchmarks: Hafnia's metrics on a Hafnia dataset, and latency per component (e.g. 'network_p90_ms').
-# The recipe aligns the prediction classes to the dataset's by name (e.g. 91 COCO model classes to 80)
-recipe = align_classes_recipe(dataset, task_name="object_detection")
-metrics, dataset_predictions = run_benchmark(dataset, model, recipe_transforms=[recipe])
+# AlignPredictionClasses matches the prediction classes to the dataset's by name: it removes additional
+# classes (e.g. COCO models have 91 classes, 'coco-2017' 80) and puts the classes in the dataset's order
+metrics, dataset_predictions = run_benchmark(dataset, model, recipe_transforms=[AlignPredictionClasses()])
 latency = model.measure_latency(images, batch_size=1)
 
 # Intermediate values of the graph (torch tensors)

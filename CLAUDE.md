@@ -33,7 +33,7 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 | Package | Role |
 |---|---|
-| `inference_model_core` | `ModelBundle` (model info schema, read, write, convert), component definitions, `GraphInferenceModel` (incl. the latency benchmark), `load_graph`, `align_classes_recipe` for Hafnia's `run_benchmark` |
+| `inference_model_core` | `ModelBundle` (model info schema, read, write, convert), component definitions, `GraphInferenceModel` (incl. the latency benchmark), `load_graph`, the recipe transform `AlignPredictionClasses` for Hafnia's `run_benchmark` |
 | `inference_model_torch` | The torch graph engine: `TorchModelGraph`, implementations of the standard definitions, network base classes, torch → ONNX |
 | `inference_model_onnxruntime` | `onnx_network` on ONNX Runtime |
 | `inference_model_openvino` | `openvino_network` on OpenVINO, `onnx_network` as an alternative, converters to OpenVINO IR and INT8 |
@@ -43,8 +43,8 @@ Each top-level package under `src/` is a separate concept that can later move to
 
 - Nothing here imports `package_openvino` or knows about the trainer package's scripts.
 - The user interface is two classes, `ModelBundle` and `GraphInferenceModel`. New functionality is a method
-  on one of them, not a module-level function that does the same. The exception is a helper that only
-  feeds Hafnia's own functions and needs neither class, such as `align_classes_recipe`.
+  on one of them, not a module-level function that does the same. The exception is a Hafnia recipe transform
+  that needs neither class, such as `AlignPredictionClasses`.
 - Every function that writes a bundle takes one path and returns the written `ModelBundle`. A path ending with
   `.zip` is written as a zip, any other as a folder.
 - The load settings (`device`, `params`, `inference_engine`, ...) are defined once, in `LoadSettings`, and

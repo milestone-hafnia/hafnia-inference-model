@@ -38,7 +38,7 @@ from hafnia.utils import progress_bar
 from rich import print as rprint
 from rich.table import Table
 
-from inference_model_core import GraphInferenceModel, ModelBundle, align_classes_recipe
+from inference_model_core import AlignPredictionClasses, GraphInferenceModel, ModelBundle
 
 MODELS = {
     "SSDLite320": "ssdlite320_mobilenet_v3_large",
@@ -94,7 +94,7 @@ def median_latency_ms(path_bundle: Path, engine: Optional[str], images: List[np.
 dataset = HafniaDataset.from_path(PATH_DATASET)
 images = [Sample(**sample_dict).read_image() for sample_dict in dataset]
 # The models predict 91 COCO classes (incl. placeholders), the dataset has 80: align the predictions by name
-recipes = [align_classes_recipe(dataset, "object_detection")]
+recipes = [AlignPredictionClasses()]
 
 table = Table(
     title=f"Detection models on {len(dataset)} COCO images",

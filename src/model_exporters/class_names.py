@@ -3,7 +3,7 @@
 COCO-trained models (torchvision, RF-DETR) output COCO category ids: label 0 and 10 ids have no category.
 These labels are classes of the task too, under unique placeholder names: 'NotDefined_000', 'NotDefined_012',
 ... as in trainer-object-detection's model archives. Benchmarks against datasets without them align the
-prediction classes by name (see 'align_classes_recipe').
+prediction classes by name (see 'AlignPredictionClasses').
 """
 
 from typing import List

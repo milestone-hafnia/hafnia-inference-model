@@ -5,7 +5,7 @@ Nothing here computes anything: the torch graph engine ('inference_model_torch')
 definitions and runs the graph. It is imported when a graph is loaded, so describing, reading and writing a
 bundle needs no tensor library (see docs/design.md)."""
 
-from inference_model_core.benchmark import align_classes_recipe
+from inference_model_core.benchmark import AlignPredictionClasses
 from inference_model_core.bundle_io import MODEL_INFO_FILENAME
 from inference_model_core.convert import ConversionRequest, list_converters, register_converter
 from inference_model_core.definition import ComponentDefinition, Port, Ports
@@ -25,6 +25,7 @@ __all__ = [
     "INPUT_KEY",
     "MODEL_INFO_FILENAME",
     "OUTPUT_KEY",
+    "AlignPredictionClasses",
     "ComponentDefinition",
     "ComponentInfo",
     "ConversionInfo",
@@ -39,7 +40,6 @@ __all__ = [
     "Port",
     "Ports",
     "TensorInfo",
-    "align_classes_recipe",
     "list_converters",
     "load_graph",
     "register_converter",

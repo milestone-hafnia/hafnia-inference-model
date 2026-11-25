@@ -11,7 +11,7 @@ import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import assert_detections_match, network_of
 
-from inference_model_core import GraphInferenceModel, align_classes_recipe, load_graph
+from inference_model_core import AlignPredictionClasses, GraphInferenceModel, load_graph
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
@@ -109,7 +109,7 @@ def test_engine_options(ssd_ir, images):
 
 def test_hafnia_benchmark_on_micro_coco(ssd, ssd_ir, micro_coco):
     """Same metrics on both engines through hafnia's benchmark."""
-    recipes = [align_classes_recipe(micro_coco, "object_detection")]
+    recipes = [AlignPredictionClasses()]
     onnxruntime_metrics, _ = run_benchmark(
         micro_coco, GraphInferenceModel.from_path(ssd[2]), recipe_transforms=recipes, batch_size=2
     )

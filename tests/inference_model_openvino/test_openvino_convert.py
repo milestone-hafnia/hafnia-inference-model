@@ -13,7 +13,7 @@ import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import network_of
 
-from inference_model_core import GraphInferenceModel, ModelBundle, NetworkParams, align_classes_recipe
+from inference_model_core import AlignPredictionClasses, GraphInferenceModel, ModelBundle, NetworkParams
 
 pytest.importorskip("torch")
 pytest.importorskip("nncf")
@@ -55,7 +55,7 @@ def weights_size(path_bundle) -> int:
 
 def mean_average_precision(path_bundle, dataset) -> float:
     with contextlib.redirect_stdout(io.StringIO()):  # Hide the COCO evaluation report
-        recipes = [align_classes_recipe(dataset, "object_detection")]
+        recipes = [AlignPredictionClasses()]
         metrics, _ = run_benchmark(dataset, GraphInferenceModel.from_path(path_bundle), recipe_transforms=recipes)
     return metrics["object_detection/mAP"]
 
