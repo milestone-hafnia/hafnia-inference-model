@@ -29,12 +29,13 @@ from hafnia_inference_model.core import ConversionInfo, GraphInfo, ModelBundle, 
 from hafnia_inference_model.core.convert import TARGET_ONNX, TARGET_OPENVINO, TARGET_OPENVINO_INT8
 from hafnia_inference_model.core.definitions import ClassificationFromLogits, ImageToTensor, LoadImage, ResizeImage
 from hafnia_inference_model.exporters.definitions import TorchvisionClassifier
+from hafnia_inference_model.exporters.pretrained_weights import torchvision_weights_dir
 from hafnia_inference_model.exporters.trainer_archive import open_trainer_archive
 from hafnia_inference_model.torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from hafnia_inference_model.torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
 
 FRAMEWORK = "torchvision"
-WEIGHTS_FILE = "network/weights.pth"
+WEIGHTS_FILENAME = "network/weights.pth"
 TASK_NAME = "classification"
 DEFAULT_IMAGE_SIZE = 224
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -77,9 +78,11 @@ class TorchvisionClassifierModule(TorchNetwork[TorchvisionClassifier]):
 
 
 def load_pretrained_model(model_name: str) -> Tuple[nn.Module, TaskInfo, int]:
-    """Pretrained ImageNet model. Returns (model in eval mode, task with the ImageNet classes, image size)."""
+    """Pretrained ImageNet model, downloaded into 'models/torchvision' on first use (see 'pretrained_weights').
+    Returns (model in eval mode, task with the ImageNet classes, image size)."""
     builder, weights = _architecture(model_name)
-    model = builder(weights=weights).eval()
+    with torchvision_weights_dir():
+        model = builder(weights=weights).eval()
     task = TaskInfo.from_class_names(
         primitive=Classification, class_names=list(weights.meta["categories"]), name=TASK_NAME
     )
@@ -176,7 +179,7 @@ def create_torchvision_classification_bundle(
             "network",
             inputs={"images": "input_tensor"},
             outputs={"logits": "logits"},
-            files=[WEIGHTS_FILE],
+            files=[WEIGHTS_FILENAME],
             batched=True,
             conversions={
                 TARGET_ONNX: ConversionInfo(options={"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True}),
@@ -204,7 +207,7 @@ def create_torchvision_classification_bundle(
     with tempfile.TemporaryDirectory(prefix="classification_bundle_") as tmp_dir:
         path_weights = Path(tmp_dir) / "weights.pth"
         torch.save(model.state_dict(), path_weights)
-        return bundle.write(path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
+        return bundle.write(path_bundle, files={WEIGHTS_FILENAME: path_weights}, overwrite=overwrite)
 
 
 def _architecture(model_name: str) -> Tuple[Callable[..., nn.Module], WeightsEnum]:

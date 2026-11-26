@@ -107,7 +107,7 @@ uv run python tests/micro_datasets.py --force  # Recreate all of them
 
 ```bash
 uv sync --all-extras         # Install with all extras and the dev group
-uv run pytest                # Run all tests (the first run downloads pretrained torchvision weights)
+uv run pytest                # Run all tests (the first run downloads pretrained weights into models/)
 uv run pytest -m "not slow"  # Skip the end-to-end export tests
 uv run pytest tests/test_openvino  # Tests of one subpackage (one folder per subpackage)
 uv run ruff check src tests examples          # Lint
@@ -125,7 +125,8 @@ from hafnia_inference_model.core import AlignPredictionClasses
 
 # Write a pretrained model as a bundle with a torch network, and convert it
 print(ModelBundle.list_pretrained())  # The names. A model only needs the dependencies of its own framework
-bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")  # Writes and returns it
+# Writes and returns it. The weights are downloaded into models/ of the working directory on first use
+bundle = ModelBundle.from_pretrained("ssdlite320_mobilenet_v3_large", "model_torch.zip")
 bundle = ModelBundle.from_path("model_torch.zip")  # Or read a bundle: a folder or a zip
 bundle_onnx = bundle.convert("onnx", "model_onnx.zip")  # Writes the new bundle and returns it
 bundle_onnx.convert("openvino", "model_openvino.zip")  # Or options={"precision": "fp16"}

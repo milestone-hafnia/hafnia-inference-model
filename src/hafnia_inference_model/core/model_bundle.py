@@ -262,8 +262,10 @@ class ModelBundle(ModelInfo):
         """Write a pretrained model as a bundle and return the written bundle.
 
         Unlike 'from_path' this creates the bundle: the weights are downloaded on first use and written to
-        'path_bundle'. The bundle has the network of the model's framework (e.g. a torch network), so creating,
-        loading and converting it need the dependencies of that framework, and only of that one.
+        'path_bundle'. The model families of this library download them into 'models/<framework>' of the working
+        directory and use them from there, so a program that ships that folder runs without internet access.
+        The bundle has the network of the model's framework (e.g. a torch network), so creating, loading and
+        converting it need the dependencies of that framework, and only of that one.
 
         Args:
             name: Name of the pretrained model, see 'list_pretrained'.

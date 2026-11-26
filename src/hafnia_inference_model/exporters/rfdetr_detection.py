@@ -37,6 +37,7 @@ from hafnia_inference_model.core.convert import TARGET_ONNX, TARGET_OPENVINO, TA
 from hafnia_inference_model.core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, QueryTopK, ResizeImage
 from hafnia_inference_model.exporters.class_names import detection_task, placeholder_class_name
 from hafnia_inference_model.exporters.definitions import RFDETRNetwork
+from hafnia_inference_model.exporters.pretrained_weights import rfdetr_weights_dir
 from hafnia_inference_model.exporters.trainer_archive import open_trainer_archive
 from hafnia_inference_model.torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from hafnia_inference_model.torch.onnx_export import DEFAULT_OPSET_VERSION, onnx_options
@@ -95,9 +96,10 @@ class RFDETRModule(TorchNetwork[RFDETRNetwork]):
 
 
 def load_pretrained_model(model_name: str) -> Tuple[detr.RFDETR, List[str]]:
-    """Pretrained COCO model (weights are downloaded on first use). Returns (model, category name per logit
-    column), with placeholders for COCO ids without a category."""
-    model = _model_class(model_name)()
+    """Pretrained COCO model, downloaded into 'models/rfdetr' on first use (see 'pretrained_weights'). Returns
+    (model, category name per logit column), with placeholders for COCO ids without a category."""
+    with rfdetr_weights_dir():
+        model = _model_class(model_name)()
     n_columns = model.model_config.num_classes + 1
     categories = [COCO_CLASSES.get(column, placeholder_class_name(column)) for column in range(n_columns)]
     return model, categories

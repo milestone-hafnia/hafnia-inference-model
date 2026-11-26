@@ -52,11 +52,12 @@ from hafnia_inference_model.core.convert import TARGET_ONNX, TARGET_OPENVINO, TA
 from hafnia_inference_model.core.definitions import AnchorNMS, DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
 from hafnia_inference_model.exporters.class_names import detection_task, placeholder_class_name
 from hafnia_inference_model.exporters.definitions import TorchvisionFasterRCNN, TorchvisionSSDNetwork
+from hafnia_inference_model.exporters.pretrained_weights import torchvision_weights_dir
 from hafnia_inference_model.torch.network import OnnxExport, TorchNetwork, load_state_dict_file
 from hafnia_inference_model.torch.onnx_export import DEFAULT_OPSET_VERSION, batch_axes, onnx_export, onnx_options
 
 FRAMEWORK = "torchvision"
-WEIGHTS_FILE = "network/weights.pth"
+WEIGHTS_FILENAME = "network/weights.pth"
 TASK_NAME = "object_detection"
 # Score threshold of full-model networks. The runtime 'score_threshold' filters on top of it.
 FULL_MODEL_MIN_SCORE = 0.001
@@ -90,12 +91,15 @@ PRETRAINED_MODELS: Dict[str, PretrainedModel] = {
 
 
 def load_pretrained_model(model_name: str) -> Tuple[nn.Module, List[str]]:
-    """Build a pretrained torchvision detection model. Returns the model in eval mode and its categories
-    (model label -> name, including torchvision's '__background__' and 'N/A' placeholders)."""
+    """Build a pretrained torchvision detection model, downloaded into 'models/torchvision' on first use (see
+    'pretrained_weights'). Returns the model in eval mode and its categories (model label -> name, including
+    torchvision's '__background__' and 'N/A' placeholders)."""
     if model_name not in PRETRAINED_MODELS:
         raise ValueError(f"Unsupported model '{model_name}'. Options: {list(PRETRAINED_MODELS)}")
     builder, weights = PRETRAINED_MODELS[model_name]
-    return builder(weights=weights).eval(), list(weights.meta["categories"])
+    with torchvision_weights_dir():
+        model = builder(weights=weights)
+    return model.eval(), list(weights.meta["categories"])
 
 
 def create_pretrained_torchvision_detection_bundle(
@@ -165,7 +169,7 @@ def create_torchvision_detection_bundle(
     with tempfile.TemporaryDirectory(prefix="torchvision_bundle_") as tmp_dir:
         path_weights = Path(tmp_dir) / "weights.pth"
         torch.save(model.state_dict(), path_weights)
-        return bundle.write(path_bundle, files={WEIGHTS_FILE: path_weights}, overwrite=overwrite)
+        return bundle.write(path_bundle, files={WEIGHTS_FILENAME: path_weights}, overwrite=overwrite)
 
 
 def _network_conversions(onnx_options: Dict[str, Any], int8_options: Dict[str, Any]) -> Dict[str, ConversionInfo]:
@@ -202,7 +206,7 @@ def _ssd_components(ssd: SSD, architecture: str, n_labels: int, provenance: dict
             "network",
             inputs={"images": "input_tensor"},
             outputs={"boxes": "anchor_boxes", "scores": "anchor_scores"},
-            files=[WEIGHTS_FILE],
+            files=[WEIGHTS_FILENAME],
             batched=True,
             conversions=_network_conversions(
                 {"opset_version": DEFAULT_OPSET_VERSION, "dynamic_batch": True}, SSD_INT8_OPTIONS
@@ -243,7 +247,7 @@ def _faster_rcnn_components(
             "network",
             inputs={"image": "input_tensor"},
             outputs={"boxes": "boxes", "scores": "scores", "labels": "labels"},
-            files=[WEIGHTS_FILE],
+            files=[WEIGHTS_FILENAME],
             batched=False,
             conversions=_network_conversions({"opset_version": DEFAULT_OPSET_VERSION}, FASTER_RCNN_INT8_OPTIONS),
             provenance=provenance,

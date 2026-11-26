@@ -6,11 +6,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = [
-    "hafnia>=0.8.7",
-    "numpy>=1.26",
-    "pydantic>=2.10.4",
-]
+dependencies = ["hafnia>=0.8.7", "numpy>=1.26", "pydantic>=2.10.4"]
 
 [project.urls]
 Repository = "https://github.com/milestone-hafnia/hafnia-inference-model"
@@ -19,10 +15,17 @@ Repository = "https://github.com/milestone-hafnia/hafnia-inference-model"
 torch = ["onnx>=1.17.0", "torch==2.10.0", "torchvision==0.25.0"]
 onnxruntime = ["onnxruntime>=1.26.0"]
 openvino = ["nncf>=2.19.0", "openvino>=2025.3.0"]
-rfdetr = ["rfdetr==1.8.1"]  # RF-DETR bundles (hafnia_inference_model.exporters.rfdetr_detection), with the torch extra
+rfdetr = [
+    "rfdetr==1.8.1",
+] # RF-DETR bundles (hafnia_inference_model.exporters.rfdetr_detection), with the torch extra
 
 [dependency-groups]
-dev = ["cyclopts==4.5.1", "mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]  # cyclopts: tests/micro_datasets.py
+dev = [
+    "cyclopts==4.5.1",
+    "mypy>=1.13.0",
+    "pytest>=9.0.1",
+    "ruff>=0.11.7",
+] # cyclopts: tests/micro_datasets.py
 
 # Engine and model family dependencies are optional extras, so each module (and later each repo) only pulls
 # in what it needs:
@@ -31,6 +34,29 @@ dev = ["cyclopts==4.5.1", "mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]  # cy
 # - "torch":       hafnia_inference_model.torch, the graph engine that runs every bundle (torch, torchvision), and
 #                  conversion to ONNX and hafnia_inference_model.exporters (onnx)
 # - "rfdetr":      hafnia_inference_model.exporters.rfdetr_detection (rfdetr)
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hafnia_inference_model"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+line-length = 120
+lint.select = ["C4", "E", "F", "B", "I", "W", "RUF", "Q"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: exports real models (downloads pretrained weights on first run)",
+]
+
 
 # Component implementations, converters and pretrained models of the packages in this distribution. A separately
 # installed package adds its own to the same groups. They are imported only when a bundle needs them.
@@ -65,24 +91,3 @@ dev = ["cyclopts==4.5.1", "mypy>=1.13.0", "pytest>=9.0.1", "ruff>=0.11.7"]  # cy
 "RFDETRSmall" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
 "RFDETRMedium" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
 "RFDETRLarge" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/hafnia_inference_model"]
-
-[tool.ruff]
-extend-include = ["*.ipynb"]
-line-length = 120
-lint.select = ["C4", "E", "F", "B", "I", "W", "RUF", "Q"]
-
-[tool.mypy]
-ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-markers = [
-    "slow: exports real models (downloads pretrained weights on first run)",
-]

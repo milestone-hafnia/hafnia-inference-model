@@ -357,6 +357,13 @@ two packages register is an error too. Another package adds its models to the sa
 `from_path`, `from_pretrained` creates the bundle: it downloads the weights on first use and writes
 them to `path_bundle`, which is required as a `ModelBundle` holds no file contents in memory.
 
+The framework weights are downloaded into `models/<framework>` of the working directory
+(`models/torchvision/checkpoints`, `models/rfdetr`), not into the framework's cache in the home
+folder, and are used from there on. A trainer package runs from its root folder, so its weights end up
+in `models/` of the package: a `trainer.zip` that includes them exports its models without internet
+access. Each family points its framework's cache at the folder only while it builds the pretrained
+model (`hafnia_inference_model.exporters.pretrained_weights`), so the model is built as before.
+
 A bundle is converted **component by component** with one generic method, which writes a new
 bundle and returns it:
 
@@ -715,6 +722,14 @@ which matches training only when training resized.
 ---
 
 ## 9. Decisions
+
+**Pretrained weights in the working directory (2026-11-26):**
+
+| Question | Decision |
+|---|---|
+| How does a trainer package run `from_pretrained` without internet access? | **The framework weights are downloaded into `models/<framework>` of the working directory, and the trainer package ships them in its `trainer.zip`.** The trainer runs from its root folder, so a model downloaded once before zipping is there on the platform. The alternative of caching the written bundles, keyed by model name and library version, would work for any future source of bundles, but needs a cache folder, invalidation and a copy per call; the raw weights only change with the framework. |
+| How are the weights redirected? | **By pointing the framework's own cache at the folder while the pretrained model is built**: `torch.hub.set_dir` for torchvision, `RF_HOME` for RF-DETR, both restored afterwards. Building without pretrained weights and loading a downloaded state dict instead would change how torchvision builds detectors (frozen batch norm) and miss RF-DETR Large's fallback to its older weights. |
+| Relative to what? | **The working directory**, with no setting. The library knows nothing about the trainer package, and a setting is added when a caller needs another folder. `models/` is ignored by git here. |
 
 **INT8 from the converted IR (2026-11-25):**
 

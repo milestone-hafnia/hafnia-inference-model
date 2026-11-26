@@ -175,3 +175,6 @@ mlflow.db
 .data/
 mlruns/
 local_stuff/
+
+# Framework weights of pretrained models (hafnia_inference_model.exporters.pretrained_weights)
+models/
