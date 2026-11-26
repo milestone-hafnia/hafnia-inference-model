@@ -2,7 +2,7 @@ import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import write_dummy_bundle
 
-from hafnia_inference_model.core import AlignPredictionClasses, GraphInferenceModel
+from hafnia_model_bundle.core import AlignPredictionClasses, GraphInferenceModel
 
 
 @pytest.fixture

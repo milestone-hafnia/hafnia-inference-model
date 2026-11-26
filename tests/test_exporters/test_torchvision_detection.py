@@ -13,13 +13,13 @@ import pytest
 from hafnia.dataset.primitives import Bbox
 from helpers import assert_detections_match, network_of
 
-from hafnia_inference_model.core import GraphInferenceModel, ModelBundle, NetworkParams
+from hafnia_model_bundle.core import GraphInferenceModel, ModelBundle, NetworkParams
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
 import onnx  # noqa: E402
 
-from hafnia_inference_model.exporters.torchvision_detection import task_from_categories  # noqa: E402
+from hafnia_model_bundle.exporters.torchvision_detection import task_from_categories  # noqa: E402
 
 pytestmark = pytest.mark.slow
 

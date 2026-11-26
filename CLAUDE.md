@@ -1,4 +1,4 @@
-# hafnia-inference-model
+# hafnia-model-bundle
 
 The model bundle library: it writes bundles, converts them to OpenVINO and runs any bundle through one
 `InferenceModel` interface that returns Hafnia primitives. The Hafnia trainer package
@@ -16,52 +16,52 @@ Definition (in the bundle):   load_image -> resize_image -> image_to_tensor -> o
 Implementation (torch):     TorchLoadImage  TorchResizeImage  TorchImageToTensor  OnnxRuntimeNetwork  TorchAnchorNMS  TorchDetectionsToBboxes
 ```
 
-- **Definition** (`hafnia_inference_model.core`): one pydantic model per component type. Its fields are the
+- **Definition** (`hafnia_model_bundle.core`): one pydantic model per component type. Its fields are the
   parameters, and `input_ports` / `output_ports` declare the ports. It holds no implementation.
-- **Implementation** (`hafnia_inference_model.torch` and the inference engine packages): `Component[<definition>]`
+- **Implementation** (`hafnia_model_bundle.torch` and the inference engine packages): `Component[<definition>]`
   with a `forward` whose parameters are the input ports. Registration fails when they don't match.
 - **Graph engine**: torch runs every graph, and there is no choice of graph engine. Components exchange
   `torch.Tensor`s, which stay on the device of the component that produced them. ONNX and OpenVINO networks convert to NumPy at their boundary.
 - **Conversion** replaces the network component and keeps the rest: torch → ONNX → OpenVINO → INT8.
-- **Export**: `hafnia_inference_model.exporters` writes bundles of the supported frameworks (torchvision and RF-DETR today). It
+- **Export**: `hafnia_model_bundle.exporters` writes bundles of the supported frameworks (torchvision and RF-DETR today). It
   is the only package that depends on the frameworks, and in the concept it belongs on the side of a user's
-  trainer package. A bundle with a torch network needs `hafnia_inference_model.exporters` to rebuild the network.
+  trainer package. A bundle with a torch network needs `hafnia_model_bundle.exporters` to rebuild the network.
 
 ## Packages
 
-One package, `hafnia_inference_model`, with a subpackage per concept. Importing it imports only `core`.
+One package, `hafnia_model_bundle`, with a subpackage per concept. Importing it imports only `core`.
 
 | Package | Role |
 |---|---|
-| `hafnia_inference_model.core` | `ModelBundle` (model info schema, read, write, convert), component definitions, `GraphInferenceModel` (incl. the latency benchmark), `load_graph`, the recipe transform `AlignPredictionClasses` for Hafnia's `run_benchmark` |
-| `hafnia_inference_model.torch` | The torch graph engine: `TorchModelGraph`, implementations of the standard definitions, network base classes, torch → ONNX |
-| `hafnia_inference_model.onnxruntime` | `onnx_network` on ONNX Runtime |
-| `hafnia_inference_model.openvino` | `openvino_network` on OpenVINO, `onnx_network` as an alternative, converters to OpenVINO IR and INT8 |
-| `hafnia_inference_model.exporters` | Model families: network definitions, torch implementations, and the functions that write bundles |
+| `hafnia_model_bundle.core` | `ModelBundle` (model info schema, read, write, convert), component definitions, `GraphInferenceModel` (incl. the latency benchmark), `load_graph`, the recipe transform `AlignPredictionClasses` for Hafnia's `run_benchmark` |
+| `hafnia_model_bundle.torch` | The torch graph engine: `TorchModelGraph`, implementations of the standard definitions, network base classes, torch → ONNX |
+| `hafnia_model_bundle.onnxruntime` | `onnx_network` on ONNX Runtime |
+| `hafnia_model_bundle.openvino` | `openvino_network` on OpenVINO, `onnx_network` as an alternative, converters to OpenVINO IR and INT8 |
+| `hafnia_model_bundle.exporters` | Model families: network definitions, torch implementations, and the functions that write bundles |
 
 ## Rules
 
 - Nothing here knows about a trainer package that uses the library, or its scripts.
 - The user interface is two classes, `ModelBundle` and `GraphInferenceModel`, imported from
-  `hafnia_inference_model`. New functionality is a method
+  `hafnia_model_bundle`. New functionality is a method
   on one of them, not a module-level function that does the same. The exception is a Hafnia recipe transform
   that needs neither class, such as `AlignPredictionClasses`.
 - Every function that writes a bundle takes one path and returns the written `ModelBundle`. A path ending with
   `.zip` is written as a zip, any other as a folder.
 - The load settings (`device`, `params`, `inference_engine`, ...) are defined once, in `LoadSettings`, and
   passed on as `**load_settings`. Add a setting there, not as an argument of each function.
-- `hafnia_inference_model.core` imports no torch and no inference engine when it is imported. A test checks this.
+- `hafnia_model_bundle.core` imports no torch and no inference engine when it is imported. A test checks this.
   Only `load_graph` imports the torch graph engine, inside the function.
-- The inference engine packages import `hafnia_inference_model.core` and `hafnia_inference_model.torch`, never each other.
+- The inference engine packages import `hafnia_model_bundle.core` and `hafnia_model_bundle.torch`, never each other.
 - A component type has one definition and one default implementation. An alternative implementation is
   registered as `<type>/<inference engine>` and chosen with `inference_engine=` at load time.
 - Implementations and converters outside the standard components are registered as entry points in
-  `pyproject.toml` (`hafnia.inference_model_components`, `hafnia.inference_model_converters`),
+  `pyproject.toml` (`hafnia.model_bundle_components`, `hafnia.model_bundle_converters`),
   and only there: no `@register_component` or `@register_converter` on them. Run `uv sync` after changing them.
 - A new torch network needs no converter entry: `*/onnx` converts every torch network to ONNX.
 - A model family that reads trainer archives has a `create_trainer_archive_bundle` function in the module its
   pretrained entry points name. There is no table of trainer models.
-- A pretrained model is one entry point per model name (`hafnia.inference_model_pretrained_models`), behind
+- A pretrained model is one entry point per model name (`hafnia.model_bundle_pretrained_models`), behind
   `ModelBundle.from_pretrained`. A model family is imported only when one of its models is asked for, so a
   new family never adds a dependency to the other models.
 - Values in the data dictionary are per sample, without a batch axis. A `batched` component gets them stacked.

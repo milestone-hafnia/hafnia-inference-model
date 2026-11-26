@@ -3,7 +3,7 @@ import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
 
-from hafnia_inference_model.torch.components.classification import top1_classification
+from hafnia_model_bundle.torch.components.classification import top1_classification
 
 TASK = TaskInfo.from_class_names(primitive=Classification, class_names=["cat", "dog", "car"], name="classification")
 

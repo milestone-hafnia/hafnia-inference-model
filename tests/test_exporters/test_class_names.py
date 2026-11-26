@@ -1,6 +1,6 @@
 import pytest
 
-from hafnia_inference_model.exporters.class_names import detection_task, placeholder_class_name
+from hafnia_model_bundle.exporters.class_names import detection_task, placeholder_class_name
 
 
 def test_placeholders_make_class_names_unique():

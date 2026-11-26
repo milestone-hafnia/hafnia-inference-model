@@ -15,10 +15,10 @@ import torch
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
 
-from hafnia_inference_model.core import ComponentDefinition, ConversionInfo, GraphInfo, ModelBundle, Port
-from hafnia_inference_model.core.bundle_io import FileSource
-from hafnia_inference_model.core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
-from hafnia_inference_model.torch import Component
+from hafnia_model_bundle.core import ComponentDefinition, ConversionInfo, GraphInfo, ModelBundle, Port
+from hafnia_model_bundle.core.bundle_io import FileSource
+from hafnia_model_bundle.core.definitions import DetectionsToBboxes, ImageToTensor, LoadImage, ResizeImage
+from hafnia_model_bundle.torch import Component
 
 DUMMY_TYPE = "dummy_network"
 DUMMY_CLASS_NAMES = ["car", "person"]

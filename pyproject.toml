@@ -1,5 +1,5 @@
 [project]
-name = "hafnia-inference-model"
+name = "hafnia-model-bundle"
 version = "0.1.0"
 description = "Model bundles: describe a model as a graph of components, convert it to OpenVINO and run any bundle"
 readme = "README.md"
@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dependencies = ["hafnia>=0.8.7", "numpy>=1.26", "pydantic>=2.10.4"]
 
 [project.urls]
-Repository = "https://github.com/milestone-hafnia/hafnia-inference-model"
+Repository = "https://github.com/milestone-hafnia/hafnia-model-bundle"
 
 [project.optional-dependencies]
 torch = ["onnx>=1.17.0", "torch==2.10.0", "torchvision==0.25.0"]
@@ -17,7 +17,7 @@ onnxruntime = ["onnxruntime>=1.26.0"]
 openvino = ["nncf>=2.19.0", "openvino>=2025.3.0"]
 rfdetr = [
     "rfdetr==1.8.1",
-] # RF-DETR bundles (hafnia_inference_model.exporters.rfdetr_detection), with the torch extra
+] # RF-DETR bundles (hafnia_model_bundle.exporters.rfdetr_detection), with the torch extra
 
 [dependency-groups]
 dev = [
@@ -29,11 +29,11 @@ dev = [
 
 # Engine and model family dependencies are optional extras, so each module (and later each repo) only pulls
 # in what it needs:
-# - "onnxruntime": hafnia_inference_model.onnxruntime
-# - "openvino":    hafnia_inference_model.openvino (openvino, nncf)
-# - "torch":       hafnia_inference_model.torch, the graph engine that runs every bundle (torch, torchvision), and
-#                  conversion to ONNX and hafnia_inference_model.exporters (onnx)
-# - "rfdetr":      hafnia_inference_model.exporters.rfdetr_detection (rfdetr)
+# - "onnxruntime": hafnia_model_bundle.onnxruntime
+# - "openvino":    hafnia_model_bundle.openvino (openvino, nncf)
+# - "torch":       hafnia_model_bundle.torch, the graph engine that runs every bundle (torch, torchvision), and
+#                  conversion to ONNX and hafnia_model_bundle.exporters (onnx)
+# - "rfdetr":      hafnia_model_bundle.exporters.rfdetr_detection (rfdetr)
 
 
 [build-system]
@@ -41,7 +41,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hafnia_inference_model"]
+packages = ["src/hafnia_model_bundle"]
 
 [tool.ruff]
 extend-include = ["*.ipynb"]
@@ -61,33 +61,33 @@ markers = [
 # Component implementations, converters and pretrained models of the packages in this distribution. A separately
 # installed package adds its own to the same groups. They are imported only when a bundle needs them.
 #
-# Implementations of component definitions on the torch graph engine (see 'hafnia_inference_model.torch.component').
-# The standard components ('hafnia_inference_model.torch.components') need no entry.
-[project.entry-points."hafnia.inference_model_components"]
+# Implementations of component definitions on the torch graph engine (see 'hafnia_model_bundle.torch.component').
+# The standard components ('hafnia_model_bundle.torch.components') need no entry.
+[project.entry-points."hafnia.model_bundle_components"]
 # "<type>": the default implementation of a component type. "<type>/<inference engine>": an alternative
-"onnx_network" = "hafnia_inference_model.onnxruntime.components:OnnxRuntimeNetwork"
-"onnx_network/openvino" = "hafnia_inference_model.openvino.components:OpenVINOOnnxNetwork"
-"openvino_network" = "hafnia_inference_model.openvino.components:OpenVINOIRNetwork"
-"torchvision_classifier" = "hafnia_inference_model.exporters.torchvision_classification:TorchvisionClassifierModule"
-"torchvision_ssd_network" = "hafnia_inference_model.exporters.torchvision_detection:TorchvisionSSDModule"
-"torchvision_faster_rcnn" = "hafnia_inference_model.exporters.torchvision_detection:TorchvisionFasterRCNNModule"
-"rfdetr_network" = "hafnia_inference_model.exporters.rfdetr_detection:RFDETRModule"
+"onnx_network" = "hafnia_model_bundle.onnxruntime.components:OnnxRuntimeNetwork"
+"onnx_network/openvino" = "hafnia_model_bundle.openvino.components:OpenVINOOnnxNetwork"
+"openvino_network" = "hafnia_model_bundle.openvino.components:OpenVINOIRNetwork"
+"torchvision_classifier" = "hafnia_model_bundle.exporters.torchvision_classification:TorchvisionClassifierModule"
+"torchvision_ssd_network" = "hafnia_model_bundle.exporters.torchvision_detection:TorchvisionSSDModule"
+"torchvision_faster_rcnn" = "hafnia_model_bundle.exporters.torchvision_detection:TorchvisionFasterRCNNModule"
+"rfdetr_network" = "hafnia_model_bundle.exporters.rfdetr_detection:RFDETRModule"
 
-[project.entry-points."hafnia.inference_model_converters"]
+[project.entry-points."hafnia.model_bundle_converters"]
 # "<source type>/<target>". The source type "*" is every component type without a converter of its own: every
 # torch network converts to ONNX with the same function, so a model family adds no entry.
-"*/onnx" = "hafnia_inference_model.torch.convert:convert_torch_to_onnx"
-"onnx_network/openvino" = "hafnia_inference_model.openvino.convert:convert_onnx_to_openvino"
-"onnx_network/openvino_int8" = "hafnia_inference_model.openvino.convert:quantize_to_openvino_int8"
-"openvino_network/openvino_int8" = "hafnia_inference_model.openvino.convert:quantize_to_openvino_int8"
+"*/onnx" = "hafnia_model_bundle.torch.convert:convert_torch_to_onnx"
+"onnx_network/openvino" = "hafnia_model_bundle.openvino.convert:convert_onnx_to_openvino"
+"onnx_network/openvino_int8" = "hafnia_model_bundle.openvino.convert:quantize_to_openvino_int8"
+"openvino_network/openvino_int8" = "hafnia_model_bundle.openvino.convert:quantize_to_openvino_int8"
 
 # "<model name>": a function '(name, path_bundle, overwrite) -> ModelBundle' behind 'ModelBundle.from_pretrained'.
 # A model family is imported only when one of its models is asked for, so e.g. 'resnet18' doesn't need 'rfdetr'.
-[project.entry-points."hafnia.inference_model_pretrained_models"]
-"ssdlite320_mobilenet_v3_large" = "hafnia_inference_model.exporters.torchvision_detection:create_pretrained_torchvision_detection_bundle"
-"fasterrcnn_mobilenet_v3_large_320_fpn" = "hafnia_inference_model.exporters.torchvision_detection:create_pretrained_torchvision_detection_bundle"
-"resnet18" = "hafnia_inference_model.exporters.torchvision_classification:create_pretrained_torchvision_classification_bundle"
-"RFDETRNano" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
-"RFDETRSmall" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
-"RFDETRMedium" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
-"RFDETRLarge" = "hafnia_inference_model.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+[project.entry-points."hafnia.model_bundle_pretrained_models"]
+"ssdlite320_mobilenet_v3_large" = "hafnia_model_bundle.exporters.torchvision_detection:create_pretrained_torchvision_detection_bundle"
+"fasterrcnn_mobilenet_v3_large_320_fpn" = "hafnia_model_bundle.exporters.torchvision_detection:create_pretrained_torchvision_detection_bundle"
+"resnet18" = "hafnia_model_bundle.exporters.torchvision_classification:create_pretrained_torchvision_classification_bundle"
+"RFDETRNano" = "hafnia_model_bundle.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+"RFDETRSmall" = "hafnia_model_bundle.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+"RFDETRMedium" = "hafnia_model_bundle.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"
+"RFDETRLarge" = "hafnia_model_bundle.exporters.rfdetr_detection:create_pretrained_rfdetr_detection_bundle"

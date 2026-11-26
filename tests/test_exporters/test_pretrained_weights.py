@@ -5,7 +5,7 @@ import os
 import torch
 from rfdetr.assets.model_weights import get_model_cache_dir
 
-from hafnia_inference_model.exporters.pretrained_weights import rfdetr_weights_dir, torchvision_weights_dir
+from hafnia_model_bundle.exporters.pretrained_weights import rfdetr_weights_dir, torchvision_weights_dir
 
 
 def test_torchvision_weights_dir(tmp_path, monkeypatch):

@@ -13,9 +13,9 @@ from helpers import (
 )
 from pydantic import ValidationError
 
-from hafnia_inference_model.core import GraphInfo, load_graph
-from hafnia_inference_model.torch import TorchModelGraph, register_component
-from hafnia_inference_model.torch.component import unregister_component
+from hafnia_model_bundle.core import GraphInfo, load_graph
+from hafnia_model_bundle.torch import TorchModelGraph, register_component
+from hafnia_model_bundle.torch.component import unregister_component
 
 IMAGES = [random_image(32, 32, seed=0), random_image(20, 40, seed=1), random_image(64, 16, seed=2)]
 

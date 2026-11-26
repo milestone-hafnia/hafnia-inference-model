@@ -1,4 +1,4 @@
-# hafnia-inference-model
+# hafnia-model-bundle
 
 **Model bundles**: a model stored as a zip with its files and a `model_info.json` that describes it as a
 graph of components. This library writes bundles from pretrained models and trainer archives, converts them
@@ -17,10 +17,10 @@ components**. Each component reads and writes named items of one data dictionary
 
 ```mermaid
 flowchart LR
-    subgraph definition["Definition: stored in the bundle (hafnia_inference_model.core, no torch)"]
+    subgraph definition["Definition: stored in the bundle (hafnia_model_bundle.core, no torch)"]
         d1[load_image] --> d2[resize_image] --> d3[image_to_tensor] --> d4[onnx_network] --> d5[anchor_nms] --> d6[detections_to_bboxes]
     end
-    subgraph implementation["Implementation: torch graph engine (hafnia_inference_model.torch)"]
+    subgraph implementation["Implementation: torch graph engine (hafnia_model_bundle.torch)"]
         i1[TorchLoadImage] --> i2[TorchResizeImage] --> i3[TorchImageToTensor] --> i4["OnnxRuntimeNetwork<br/>or on OpenVINO"] --> i5[TorchAnchorNMS] --> i6[TorchDetectionsToBboxes]
     end
     d1 -.-> i1
@@ -31,11 +31,11 @@ flowchart LR
     d6 -.-> i6
 ```
 
-- A **component definition** (`hafnia_inference_model.core`) is a pydantic model for one component type: its fields
+- A **component definition** (`hafnia_model_bundle.core`) is a pydantic model for one component type: its fields
   are the parameters and it declares the ports (named inputs and outputs). `model_info.json` stores the type,
   the parameters and the data key of each port. A definition holds no implementation and needs no tensor
   library.
-- The **torch graph engine** (`hafnia_inference_model.torch`) has an implementation of every definition and runs the
+- The **torch graph engine** (`hafnia_model_bundle.torch`) has an implementation of every definition and runs the
   graph. Components exchange `torch.Tensor`s, so a graph can run on the GPU from the image to the detections.
   Networks stored as ONNX or OpenVINO IR files run on ONNX Runtime or OpenVINO inside the same graph.
 
@@ -43,9 +43,9 @@ Converting a bundle (torch → ONNX → OpenVINO → INT8) replaces the network 
 family is a new graph built from existing components. Running a graph needs torch, whatever format the network
 has.
 
-The export step for the two supported frameworks (torchvision and RF-DETR) is the `hafnia_inference_model.exporters` package. It
+The export step for the two supported frameworks (torchvision and RF-DETR) is the `hafnia_model_bundle.exporters` package. It
 is the only part that depends on the frameworks, and in the concept it belongs on the trainer package side. A
-bundle with a torch network needs `hafnia_inference_model.exporters` to rebuild the network, so the bundles that cross to
+bundle with a torch network needs `hafnia_model_bundle.exporters` to rebuild the network, so the bundles that cross to
 package-openvino are ONNX or OpenVINO bundles.
 
 ## Supported models
@@ -61,16 +61,16 @@ Each network runs on PyTorch (the source bundle), ONNX Runtime and OpenVINO (ONN
 
 ## Layout
 
-One package, `hafnia_inference_model`, with a subpackage per concept. `from hafnia_inference_model import
+One package, `hafnia_model_bundle`, with a subpackage per concept. `from hafnia_model_bundle import
 ModelBundle, GraphInferenceModel` imports only `core`, which needs no torch and no inference engine.
 
 | Package | Purpose |
 |---|---|
-| `hafnia_inference_model.core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), the interface of a loaded graph (`GraphInferenceModel` with its latency benchmark, `load_graph`), and `AlignPredictionClasses`, the recipe transform that aligns prediction classes for Hafnia's accuracy benchmark. No implementations, torch free. |
-| `hafnia_inference_model.torch` | The torch graph engine: `TorchModelGraph` (the executor), the implementations of the standard definitions in torch, the base classes of networks, and the converter torch → ONNX |
-| `hafnia_inference_model.onnxruntime` | Runs `onnx_network` components on ONNX Runtime, inside the torch graph engine |
-| `hafnia_inference_model.openvino` | Runs `openvino_network` (and on request `onnx_network`) components on OpenVINO, inside the torch graph engine. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
-| `hafnia_inference_model.exporters` | Model families: the definitions and torch implementations of the networks of torchvision SSD, Faster R-CNN and ResNet18 and of RF-DETR, and the functions that write their bundles from pretrained models and trainer archives |
+| `hafnia_model_bundle.core` | The bundle definition: `ModelBundle` (the model info schema, reading, writing and converting bundles as a folder or zip), component definitions (image loading, resize, tensor conversion, NMS, query top-k, primitives, ONNX and OpenVINO networks), the interface of a loaded graph (`GraphInferenceModel` with its latency benchmark, `load_graph`), and `AlignPredictionClasses`, the recipe transform that aligns prediction classes for Hafnia's accuracy benchmark. No implementations, torch free. |
+| `hafnia_model_bundle.torch` | The torch graph engine: `TorchModelGraph` (the executor), the implementations of the standard definitions in torch, the base classes of networks, and the converter torch → ONNX |
+| `hafnia_model_bundle.onnxruntime` | Runs `onnx_network` components on ONNX Runtime, inside the torch graph engine |
+| `hafnia_model_bundle.openvino` | Runs `openvino_network` (and on request `onnx_network`) components on OpenVINO, inside the torch graph engine. Converters ONNX → OpenVINO IR (FP32, FP16) and INT8 quantization (NNCF) |
+| `hafnia_model_bundle.exporters` | Model families: the definitions and torch implementations of the networks of torchvision SSD, Faster R-CNN and ResNet18 and of RF-DETR, and the functions that write their bundles from pretrained models and trainer archives |
 
 ## Examples
 
@@ -120,8 +120,8 @@ uv run mypy src tests examples                # Type check
 ```python
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 
-from hafnia_inference_model import GraphInferenceModel, ModelBundle
-from hafnia_inference_model.core import AlignPredictionClasses
+from hafnia_model_bundle import GraphInferenceModel, ModelBundle
+from hafnia_model_bundle.core import AlignPredictionClasses
 
 # Write a pretrained model as a bundle with a torch network, and convert it
 print(ModelBundle.list_pretrained())  # The names. A model only needs the dependencies of its own framework
@@ -162,13 +162,13 @@ latency = model.measure_latency(images, batch_size=1)
 network_outputs = model.graph.run({"image": image}, outputs=["anchor_boxes", "anchor_scores"])
 
 # A definition describes a component and connects it into a graph. It computes nothing itself
-from hafnia_inference_model.core.definitions import ResizeImage
+from hafnia_model_bundle.core.definitions import ResizeImage
 
 resize = ResizeImage(mode="letterbox", height=320, width=320)
 info = resize.connect("resize", inputs={"image": "image_rgb"}, outputs={"image": "resized", "transform": "t"})
 
 # The torch implementations are functions on tensors, which also run on their own
-from hafnia_inference_model.torch.components.image import load_image_rgb, resize_image
+from hafnia_model_bundle.torch.components.image import load_image_rgb, resize_image
 
 resized, transform = resize_image(load_image_rgb(image), mode="letterbox", height=320, width=320)
 ```

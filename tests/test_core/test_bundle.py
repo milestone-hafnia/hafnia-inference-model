@@ -6,7 +6,7 @@ import pytest
 from helpers import DUMMY_NETWORK_FILE as MODEL_FILE
 from helpers import make_bundle
 
-from hafnia_inference_model.core import MODEL_INFO_FILENAME, ModelBundle
+from hafnia_model_bundle.core import MODEL_INFO_FILENAME, ModelBundle
 
 
 def test_write_and_read_folder(tmp_path):

@@ -38,8 +38,8 @@ from hafnia.utils import progress_bar
 from rich import print as rprint
 from rich.table import Table
 
-from hafnia_inference_model import GraphInferenceModel, ModelBundle
-from hafnia_inference_model.core import AlignPredictionClasses
+from hafnia_model_bundle import GraphInferenceModel, ModelBundle
+from hafnia_model_bundle.core import AlignPredictionClasses
 
 MODELS = {
     "SSDLite320": "ssdlite320_mobilenet_v3_large",

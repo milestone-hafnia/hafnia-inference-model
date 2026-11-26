@@ -12,8 +12,8 @@ from hafnia.dataset.hafnia_dataset_types import Sample
 from helpers import DummyNetwork
 from micro_datasets import get_micro_dataset
 
-from hafnia_inference_model.torch import register_component
-from hafnia_inference_model.torch.component import unregister_component
+from hafnia_model_bundle.torch import register_component
+from hafnia_model_bundle.torch.component import unregister_component
 
 SSD_NAME = "ssdlite320_mobilenet_v3_large"
 FRCNN_NAME = "fasterrcnn_mobilenet_v3_large_320_fpn"
@@ -44,7 +44,7 @@ def images(micro_coco) -> List[np.ndarray]:
 # (original model, categories or task, bundle path).
 def _convert(tmp_path_factory, source, target, **kwargs):
     """Convert the bundle of a fixture. Returns the fixture tuple with the converted bundle."""
-    from hafnia_inference_model.core import ModelBundle
+    from hafnia_model_bundle.core import ModelBundle
 
     model, labels, path_source = source
     suffix = "_".join([target, *(str(value) for value in kwargs.get("options", {}).values())])
@@ -54,7 +54,7 @@ def _convert(tmp_path_factory, source, target, **kwargs):
 
 def _torchvision_detection_bundle(tmp_path_factory, model_name):
     pytest.importorskip("torch")
-    from hafnia_inference_model.exporters.torchvision_detection import (
+    from hafnia_model_bundle.exporters.torchvision_detection import (
         create_torchvision_detection_bundle,
         load_pretrained_model,
     )
@@ -81,7 +81,7 @@ def frcnn_torch(tmp_path_factory):
 def resnet18_torch(tmp_path_factory):
     """Pretrained ResNet18. Returns (torch model, task, bundle path)."""
     pytest.importorskip("torch")
-    from hafnia_inference_model.exporters.torchvision_classification import (
+    from hafnia_model_bundle.exporters.torchvision_classification import (
         create_torchvision_classification_bundle,
         load_pretrained_model,
     )
@@ -98,7 +98,7 @@ def resnet18_torch(tmp_path_factory):
 def rfdetr_torch(tmp_path_factory):
     """Pretrained RF-DETR Nano. Returns (rfdetr model, categories, bundle path)."""
     pytest.importorskip("rfdetr")
-    from hafnia_inference_model.exporters.rfdetr_detection import create_rfdetr_detection_bundle, load_pretrained_model
+    from hafnia_model_bundle.exporters.rfdetr_detection import create_rfdetr_detection_bundle, load_pretrained_model
 
     model, categories = load_pretrained_model("RFDETRNano")
     path_bundle = tmp_path_factory.mktemp("rfdetr") / "RFDETRNano_torch.zip"

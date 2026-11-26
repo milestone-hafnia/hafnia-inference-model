@@ -13,13 +13,13 @@ import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import network_of
 
-from hafnia_inference_model.core import AlignPredictionClasses, GraphInferenceModel, ModelBundle, NetworkParams
+from hafnia_model_bundle.core import AlignPredictionClasses, GraphInferenceModel, ModelBundle, NetworkParams
 
 pytest.importorskip("torch")
 pytest.importorskip("nncf")
 import openvino as ov
 
-from hafnia_inference_model.openvino.components import OpenVINOIRNetwork
+from hafnia_model_bundle.openvino.components import OpenVINOIRNetwork
 
 pytestmark = pytest.mark.slow
 

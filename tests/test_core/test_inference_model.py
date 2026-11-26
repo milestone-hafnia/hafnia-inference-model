@@ -9,7 +9,7 @@ from hafnia.dataset.primitives import Bbox
 from helpers import DUMMY_CLASS_NAMES, make_bundle, random_image, write_dummy_bundle
 from PIL import Image
 
-from hafnia_inference_model.core import GraphInferenceModel, LoadSettings, ModelBundle, load_graph
+from hafnia_model_bundle.core import GraphInferenceModel, LoadSettings, ModelBundle, load_graph
 
 
 def test_graph_inference_model_from_path(tmp_path, dummy_network):
@@ -49,7 +49,7 @@ def test_load_settings(tmp_path, dummy_network):
 
 
 def test_running_a_graph_needs_the_torch_graph_engine(tmp_path, monkeypatch):
-    monkeypatch.setitem(sys.modules, "hafnia_inference_model.torch.graph", None)  # As when torch is not installed
+    monkeypatch.setitem(sys.modules, "hafnia_model_bundle.torch.graph", None)  # As when torch is not installed
     with pytest.raises(ImportError, match=r"needs the torch graph engine .* Install the 'torch' extra"):
         load_graph(write_dummy_bundle(tmp_path / "model.zip"))
 

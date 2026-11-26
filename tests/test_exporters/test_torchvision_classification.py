@@ -10,15 +10,15 @@ import pytest
 from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Classification
 
-from hafnia_inference_model.core import GraphInferenceModel, ModelBundle, NetworkParams
+from hafnia_model_bundle.core import GraphInferenceModel, ModelBundle, NetworkParams
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
 import torchvision.transforms.functional as F  # noqa: E402
 from torchvision.models import resnet18 as build_resnet18  # noqa: E402
 
-from hafnia_inference_model.exporters.torchvision_classification import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
-from hafnia_inference_model.exporters.trainer_archive import create_bundle_from_trainer_archive  # noqa: E402
+from hafnia_model_bundle.exporters.torchvision_classification import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
+from hafnia_model_bundle.exporters.trainer_archive import create_bundle_from_trainer_archive  # noqa: E402
 
 pytestmark = pytest.mark.slow
 

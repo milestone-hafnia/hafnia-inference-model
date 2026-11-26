@@ -8,8 +8,8 @@ import pytest
 from helpers import make_bundle
 from pydantic import ValidationError
 
-from hafnia_inference_model.core import ComponentDefinition, Port, Ports, TensorInfo
-from hafnia_inference_model.core.definitions import DetectionsToBboxes, ImageToTensor, OnnxNetwork, ResizeImage
+from hafnia_model_bundle.core import ComponentDefinition, Port, Ports, TensorInfo
+from hafnia_model_bundle.core.definitions import DetectionsToBboxes, ImageToTensor, OnnxNetwork, ResizeImage
 
 MODEL_INFO = make_bundle()
 
@@ -110,8 +110,8 @@ def test_detections_to_bboxes_needs_transform_or_image():
 def test_definitions_need_no_tensor_library():
     """Bundles can be described and checked without torch: only running a graph needs the graph engine."""
     code = (
-        "import sys, hafnia_inference_model, hafnia_inference_model.core.definitions, "
-        "hafnia_inference_model.exporters.definitions; "
+        "import sys, hafnia_model_bundle, hafnia_model_bundle.core.definitions, "
+        "hafnia_model_bundle.exporters.definitions; "
         "assert 'torch' not in sys.modules, 'torch was imported'"
     )
     subprocess.run([sys.executable, "-c", code], check=True)

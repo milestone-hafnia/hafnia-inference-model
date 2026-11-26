@@ -6,9 +6,9 @@ from hafnia.dataset.primitives import Bbox
 from helpers import random_image
 from PIL import Image
 
-from hafnia_inference_model.core import ImageTransform
-from hafnia_inference_model.torch.components.detection import bboxes_from_input_xyxy, input_xyxy_to_normalized
-from hafnia_inference_model.torch.components.image import image_to_tensor, load_image_rgb, resize_image
+from hafnia_model_bundle.core import ImageTransform
+from hafnia_model_bundle.torch.components.detection import bboxes_from_input_xyxy, input_xyxy_to_normalized
+from hafnia_model_bundle.torch.components.image import image_to_tensor, load_image_rgb, resize_image
 
 
 def random_tensor_image(height: int, width: int, seed: int = 0) -> torch.Tensor:

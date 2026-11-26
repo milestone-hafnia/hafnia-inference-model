@@ -4,7 +4,7 @@ from hafnia.dataset.primitives import Bbox
 from helpers import make_bundle
 from pydantic import ValidationError
 
-from hafnia_inference_model.core import ComponentInfo, GraphInfo, ModelBundle
+from hafnia_model_bundle.core import ComponentInfo, GraphInfo, ModelBundle
 
 
 def component(name="step", inputs=None, outputs=None, **kwargs) -> ComponentInfo:

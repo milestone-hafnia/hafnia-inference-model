@@ -9,11 +9,11 @@ import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import assert_detections_match, network_of
 
-from hafnia_inference_model.core import AlignPredictionClasses, GraphInferenceModel, ModelBundle
+from hafnia_model_bundle.core import AlignPredictionClasses, GraphInferenceModel, ModelBundle
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
-from hafnia_inference_model.onnxruntime.components import OnnxRuntimeNetwork
+from hafnia_model_bundle.onnxruntime.components import OnnxRuntimeNetwork
 
 pytestmark = pytest.mark.slow
 

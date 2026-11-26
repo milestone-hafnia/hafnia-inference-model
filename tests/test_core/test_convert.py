@@ -7,7 +7,7 @@ from typing import List
 import pytest
 from helpers import DUMMY_NETWORK_FILE, DUMMY_TYPE, random_image, write_dummy_bundle
 
-from hafnia_inference_model.core import (
+from hafnia_model_bundle.core import (
     ComponentInfo,
     ConversionInfo,
     ConversionRequest,
@@ -15,7 +15,7 @@ from hafnia_inference_model.core import (
     list_converters,
     register_converter,
 )
-from hafnia_inference_model.core.convert import ANY_TYPE, unregister_converter
+from hafnia_model_bundle.core.convert import ANY_TYPE, unregister_converter
 
 REQUESTS: List[ConversionRequest] = []
 

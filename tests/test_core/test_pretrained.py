@@ -10,8 +10,8 @@ from typing import Dict, List, Optional
 import pytest
 from helpers import DUMMY_DETECTIONS, DUMMY_NETWORK_FILE, make_bundle
 
-from hafnia_inference_model.core import ModelBundle
-from hafnia_inference_model.core.model_bundle import PRETRAINED_ENTRY_POINT_GROUP
+from hafnia_model_bundle.core import ModelBundle
+from hafnia_model_bundle.core.model_bundle import PRETRAINED_ENTRY_POINT_GROUP
 
 CREATE_DUMMY = f"{__name__}:create_dummy_bundle"
 
@@ -40,7 +40,7 @@ def register_pretrained(monkeypatch):
             assert group == PRETRAINED_ENTRY_POINT_GROUP
             return [entry_point for entry_point in registered if name is None or entry_point.name == name]
 
-        monkeypatch.setattr("hafnia_inference_model.core.model_bundle.entry_points", entry_points)
+        monkeypatch.setattr("hafnia_model_bundle.core.model_bundle.entry_points", entry_points)
 
     return register
 
@@ -91,7 +91,7 @@ def test_a_pretrained_function_returns_the_bundle(tmp_path, register_pretrained)
 def test_pretrained_models_are_listed_without_their_frameworks():
     """The models of this repo are registered in 'pyproject.toml', and listing them imports no framework."""
     code = (
-        "import sys; from hafnia_inference_model.core import ModelBundle; names = ModelBundle.list_pretrained(); "
+        "import sys; from hafnia_model_bundle.core import ModelBundle; names = ModelBundle.list_pretrained(); "
         "assert {'ssdlite320_mobilenet_v3_large', 'resnet18', 'RFDETRNano'} <= set(names), names; "
         "assert 'torch' not in sys.modules, 'torch was imported'"
     )

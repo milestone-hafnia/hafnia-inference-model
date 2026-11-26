@@ -11,13 +11,13 @@ import pytest
 from hafnia.dataset.benchmark.benchmark import run_benchmark
 from helpers import assert_detections_match, network_of
 
-from hafnia_inference_model.core import AlignPredictionClasses, GraphInferenceModel, load_graph
+from hafnia_model_bundle.core import AlignPredictionClasses, GraphInferenceModel, load_graph
 
 pytest.importorskip("torch")
 pytest.importorskip("onnxruntime")
 pytest.importorskip("openvino")
-from hafnia_inference_model.onnxruntime.components import OnnxRuntimeNetwork
-from hafnia_inference_model.openvino.components import OpenVINOIRNetwork, OpenVINOOnnxNetwork
+from hafnia_model_bundle.onnxruntime.components import OnnxRuntimeNetwork
+from hafnia_model_bundle.openvino.components import OpenVINOIRNetwork, OpenVINOOnnxNetwork
 
 pytestmark = pytest.mark.slow
 

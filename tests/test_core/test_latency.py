@@ -1,8 +1,8 @@
 import pytest
 from helpers import network_of, random_image, write_dummy_bundle
 
-from hafnia_inference_model.core import GraphInferenceModel
-from hafnia_inference_model.core.inference_model import LATENCY_PERCENTILES
+from hafnia_model_bundle.core import GraphInferenceModel
+from hafnia_model_bundle.core.inference_model import LATENCY_PERCENTILES
 
 
 @pytest.fixture

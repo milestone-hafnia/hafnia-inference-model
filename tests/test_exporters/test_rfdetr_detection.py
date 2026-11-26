@@ -13,14 +13,14 @@ from hafnia.dataset.hafnia_dataset_types import TaskInfo
 from hafnia.dataset.primitives import Bbox
 from helpers import assert_detections_match
 
-from hafnia_inference_model.core import GraphInferenceModel, ModelBundle, NetworkParams
+from hafnia_model_bundle.core import GraphInferenceModel, ModelBundle, NetworkParams
 
 pytest.importorskip("rfdetr")
 pytest.importorskip("onnxruntime")
 import torch
 
-from hafnia_inference_model.exporters.rfdetr_detection import DEFAULT_SCORE_THRESHOLD
-from hafnia_inference_model.exporters.trainer_archive import create_bundle_from_trainer_archive
+from hafnia_model_bundle.exporters.rfdetr_detection import DEFAULT_SCORE_THRESHOLD
+from hafnia_model_bundle.exporters.trainer_archive import create_bundle_from_trainer_archive
 
 pytestmark = pytest.mark.slow
 

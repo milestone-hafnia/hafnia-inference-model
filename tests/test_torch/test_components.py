@@ -10,8 +10,8 @@ from hafnia.dataset.primitives import Bbox, Classification
 from helpers import make_bundle, random_image
 from PIL import Image
 
-from hafnia_inference_model.core import ComponentDefinition, ImageTransform, Port
-from hafnia_inference_model.core.definitions import (
+from hafnia_model_bundle.core import ComponentDefinition, ImageTransform, Port
+from hafnia_model_bundle.core.definitions import (
     AnchorNMS,
     ClassificationFromLogits,
     DetectionsToBboxes,
@@ -20,10 +20,10 @@ from hafnia_inference_model.core.definitions import (
     QueryTopK,
     ResizeImage,
 )
-from hafnia_inference_model.torch import Component, get_component_class, list_components, register_component
-from hafnia_inference_model.torch.component import ENTRY_POINT_GROUP, find_alternative_class, unregister_component
-from hafnia_inference_model.torch.components import TorchResizeImage
-from hafnia_inference_model.torch.components.detection import select_anchor_detections, select_query_detections
+from hafnia_model_bundle.torch import Component, get_component_class, list_components, register_component
+from hafnia_model_bundle.torch.component import ENTRY_POINT_GROUP, find_alternative_class, unregister_component
+from hafnia_model_bundle.torch.components import TorchResizeImage
+from hafnia_model_bundle.torch.components.detection import select_anchor_detections, select_query_detections
 
 MODEL_INFO = make_bundle()  # Task 'object_detection' with the classes 'car' and 'person'
 
@@ -106,7 +106,7 @@ def test_components_of_packages_are_registered_by_their_entry_point(monkeypatch)
         "scale": EntryPoint("scale", f"{__name__}:PackagedScale", ENTRY_POINT_GROUP),
         "scale/other": EntryPoint("scale/other", f"{__name__}:WrongPackagedScale", ENTRY_POINT_GROUP),
     }
-    monkeypatch.setattr("hafnia_inference_model.torch.component._entry_point_components", lambda: entries)
+    monkeypatch.setattr("hafnia_model_bundle.torch.component._entry_point_components", lambda: entries)
     try:
         assert "scale" in list_components()  # Listed without importing it
         assert get_component_class("scale") is PackagedScale

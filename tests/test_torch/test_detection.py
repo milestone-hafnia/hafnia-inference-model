@@ -2,7 +2,7 @@ import pytest
 import torch
 from torchvision import ops as torchvision_ops
 
-from hafnia_inference_model.torch.components.detection import (
+from hafnia_model_bundle.torch.components.detection import (
     select_anchor_detections,
     select_query_detections,
     task_label_mask,
