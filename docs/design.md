@@ -578,7 +578,7 @@ flowchart LR
 ```
 
 Only the network component changes along the way. In package-openvino, `scripts/export_to_model_bundle.py`
-does the first two arrows, `scripts/export_openvino.py` the conversions to OpenVINO and
+does the first two arrows, `scripts/export_to_openvino.py` the conversions to OpenVINO and
 `scripts/benchmark.py` the benchmarks, logged with `HafniaLogger`.
 
 The ONNX Runtime path is the **reference**. Comparing ORT vs OpenVINO FP32 vs OpenVINO INT8 on the
